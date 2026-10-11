@@ -10,7 +10,10 @@
 #include <windows.h>
 
 namespace native_display::win {
-  /** @brief Match the actual CCD monitor-device-path format, not a PnP instance-path prefix. */
+  /** @brief Match the actual CCD monitor-device-path format, not a PnP instance-path prefix.
+   * @param name CCD monitor device path.
+   * @return True for the supported MTT target identity.
+   */
   inline bool is_mtt_target(std::wstring name) {
     std::transform(name.begin(), name.end(), name.begin(), towupper);
     return name.find(L"DISPLAY#MTT1337#") != std::wstring::npos;
@@ -22,7 +25,12 @@ namespace native_display::win {
     std::vector<DISPLAYCONFIG_MODE_INFO> modes;  ///< Associated CCD modes.
   };
 
-  /** @brief Validate dimensions without silently downgrading client requests. */
+  /** @brief Validate dimensions without silently downgrading client requests.
+   * @param width Requested width in pixels.
+   * @param height Requested height in pixels.
+   * @param fps Requested refresh rate in hertz.
+   * @return Whether all values are inside the supported range.
+   */
   inline bool valid_mode(int width, int height, int fps) {
     return width >= 320 && width <= 7680 && height >= 320 && height <= 7680 && fps >= 1 && fps <= 240;
   }
@@ -52,7 +60,10 @@ namespace native_display::win {
     return {{path}, {mode}};
   }
 
-  /** @brief Check source mode indices before reading journal or API data. */
+  /** @brief Check source mode indices before reading journal or API data.
+   * @param value Snapshot to inspect without applying it.
+   * @return Whether counts and source mode references are valid.
+   */
   inline bool valid(const layout &value) {
     if (value.paths.empty() || value.paths.size() > 64 || value.modes.size() > 256) {
       return false;

@@ -1322,7 +1322,10 @@ namespace nvhttp {
     }
   }
 
-  /** @brief Select native display policy by configured application ID. */
+  /** @brief Select native display policy by configured application ID.
+   * @param appid Requested application identifier.
+   * @return Configured policy, or disabled for an unknown application.
+   */
   native_display::policy native_policy(int appid) {
     for (const auto &app : proc::proc.get_apps()) {
       if (app.id == std::to_string(appid)) {

@@ -12,7 +12,11 @@ namespace native_display {
     std::optional<std::uint32_t> id;  ///< Owning launch, including valid ID zero.
     std::chrono::steady_clock::time_point expires;  ///< Latest commit time.
 
-    /** @brief Consume a matching, unexpired preparation exactly once. */
+    /** @brief Consume a matching, unexpired preparation exactly once.
+     * @param candidate Launch attempting to commit the preparation.
+     * @param now Current monotonic time.
+     * @return True only for the first matching commit before expiry.
+     */
     bool commit(std::uint32_t candidate, std::chrono::steady_clock::time_point now) {
       if (!id || *id != candidate || now >= expires) {
         return false;
