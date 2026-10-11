@@ -10,6 +10,19 @@
 #include <windows.h>
 
 namespace native_display::win {
+  /** @brief Bound CCD allocations without confusing possible routes with active monitors.
+   * @param flags CCD query flags.
+   * @param paths Required path buffer capacity reported by Windows.
+   * @param modes Required mode buffer capacity reported by Windows.
+   * @return Whether allocation is bounded for the requested query kind.
+   */
+  inline bool valid_query_capacity(UINT32 flags, UINT32 paths, UINT32 modes) {
+    if (flags & QDC_ALL_PATHS) {
+      return paths <= 16384 && modes <= 32768;
+    }
+    return paths <= 64 && modes <= 256;
+  }
+
   /** @brief Match the actual CCD monitor-device-path format, not a PnP instance-path prefix.
    * @param name CCD monitor device path.
    * @return True for the supported MTT target identity.

@@ -55,8 +55,8 @@ namespace native_display {
       for (int attempt = 0; attempt < 5; ++attempt) {
         UINT32 pc {}, mc {};
         check(GetDisplayConfigBufferSizes(flags, &pc, &mc), "Display enumeration");
-        if (pc > 64 || mc > 256) {
-          throw std::runtime_error("Unexpected display topology size");
+        if (!win::valid_query_capacity(flags, pc, mc)) {
+          throw std::runtime_error("Unexpected display query capacity: flags=" + std::to_string(flags) + ", paths=" + std::to_string(pc) + ", modes=" + std::to_string(mc));
         }
         layout value {std::vector<DISPLAYCONFIG_PATH_INFO>(pc), std::vector<DISPLAYCONFIG_MODE_INFO>(mc)};
         auto result = QueryDisplayConfig(flags, &pc, value.paths.data(), &mc, value.modes.data(), nullptr);

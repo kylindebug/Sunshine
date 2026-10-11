@@ -45,4 +45,4 @@ jobs:
     with:
       publish_release: 'false'
       release_commit: ${{ github.sha }}
-      release_version: '2026.1011.1'
+      release_version: '2026.1011.2'

@@ -17,6 +17,19 @@ TEST(NativeDisplay, ExistingApplicationsRemainDisabled) {
   EXPECT_THROW(native_display::parse("privcy"), std::invalid_argument);
 }
 
+TEST(NativeDisplay, PossibleRoutesAreNotLimitedToActiveMonitorCount) {
+  using native_display::win::valid_query_capacity;
+  // This host reports 80 possible routes with just one active physical monitor.
+  EXPECT_TRUE(valid_query_capacity(QDC_ALL_PATHS, 80, 160));
+  EXPECT_TRUE(valid_query_capacity(QDC_ALL_PATHS, 256, 512));
+  EXPECT_TRUE(valid_query_capacity(QDC_ALL_PATHS, 16384, 32768));
+  EXPECT_FALSE(valid_query_capacity(QDC_ALL_PATHS, 16385, 32768));
+  EXPECT_FALSE(valid_query_capacity(QDC_ALL_PATHS, 16384, 32769));
+  EXPECT_TRUE(valid_query_capacity(QDC_ONLY_ACTIVE_PATHS, 64, 256));
+  EXPECT_FALSE(valid_query_capacity(QDC_ONLY_ACTIVE_PATHS, 80, 160));
+  EXPECT_FALSE(valid_query_capacity(QDC_ONLY_ACTIVE_PATHS, 64, 257));
+}
+
 TEST(NativeDisplay, LateAndWrongHandshakesCannotCommit) {
   using namespace std::chrono_literals;
   auto now = std::chrono::steady_clock::time_point {};
