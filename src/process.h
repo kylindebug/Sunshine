@@ -21,6 +21,7 @@
 
 // local includes
 #include "config.h"
+#include "native_display.h"
 #include "platform/common.h"
 #include "rtsp.h"
 #include "utility.h"
@@ -80,6 +81,7 @@ namespace proc {
     bool elevated;  ///< Whether the process should be launched elevated.
     bool auto_detach;  ///< Whether the process should detach automatically.
     bool wait_all;  ///< Whether Sunshine waits for all child processes.
+    native_display::policy native_display {native_display::policy::disabled};  ///< Opt-in native display lifecycle.
     std::chrono::seconds exit_timeout;  ///< Exit timeout.
   };
 

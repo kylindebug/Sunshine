@@ -271,6 +271,15 @@
               </div>
               <div id="appWorkingDirHelp" class="form-text">{{ $t('apps.working_dir_desc') }}</div>
             </div>
+            <div v-if="platform === 'windows'" class="mb-3">
+              <label for="nativeDisplay" class="form-label">{{ $t('apps.native_display') }}</label>
+              <select id="nativeDisplay" class="form-select" v-model="editForm['native-display']">
+                <option value="disabled">{{ $t('_common.disabled_def') }}</option>
+                <option value="physical">{{ $t('apps.native_physical') }}</option>
+                <option value="privacy">{{ $t('apps.native_privacy') }}</option>
+              </select>
+              <div class="form-text">{{ $t('apps.native_display_desc') }}</div>
+            </div>
             <!-- elevation -->
             <Checkbox v-if="platform === 'windows'"
                       class="mb-3"
@@ -739,6 +748,7 @@
           "exclude-global-prep-cmd": false,
           elevated: false,
           "auto-detach": true,
+          "native-display": "disabled",
           "wait-all": true,
           "exit-timeout": 5,
           "prep-cmd": [],
@@ -750,6 +760,7 @@
       editApp(id) {
         this.editForm = JSON.parse(JSON.stringify(this.apps[id]));
         this.editForm.index = id;
+        if (this.editForm["native-display"] === undefined) this.editForm["native-display"] = "disabled";
         if (this.editForm["prep-cmd"] === undefined)
           this.editForm["prep-cmd"] = [];
         if (this.editForm["detached"] === undefined)

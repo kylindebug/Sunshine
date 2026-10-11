@@ -29,6 +29,7 @@
 #include "globals.h"
 #include "httpcommon.h"
 #include "logging.h"
+#include "native_display.h"
 #include "network.h"
 #include "nvhttp.h"
 #include "platform/common.h"
@@ -1328,6 +1329,16 @@ namespace nvhttp {
    * @param response HTTP response object to populate.
    * @param request HTTP request data from the client.
    */
+  /** @brief Select native display policy by configured application ID. */
+  native_display::policy native_policy(int appid) {
+    for (const auto &app : proc::proc.get_apps()) {
+      if (app.id == std::to_string(appid)) {
+        return app.native_display;
+      }
+    }
+    return native_display::policy::disabled;
+  }
+
   void launch(bool &host_audio, resp_https_t response, req_https_t request) {
     print_req<SunshineHTTPS>(request);
 
@@ -1345,6 +1356,7 @@ namespace nvhttp {
       response->close_connection_after_response = true;
 
       if (revert_display_configuration) {
+        native_display::release();
         display_device::revert_configuration();
       }
     });
@@ -1384,7 +1396,16 @@ namespace nvhttp {
       // We want to prepare display only if there are no active sessions at
       // the moment. This should be done before probing encoders as it could
       // change the active displays.
-      display_device::configure_display(config::video, *launch_session);
+      const auto policy = native_policy(static_cast<int>(appid));
+      if (const auto error = native_display::prepare(policy, launch_session->width, launch_session->height, launch_session->fps); !error.empty()) {
+        tree.put("root.<xmlattr>.status_code", 503);
+        tree.put("root.<xmlattr>.status_message", error);
+        tree.put("root.gamesession", 0);
+        return;
+      }
+      if (policy == native_display::policy::disabled) {
+        display_device::configure_display(config::video, *launch_session);
+      }
 
       // Probe encoders again before streaming to ensure our chosen
       // encoder matches the active GPU (which could have changed
@@ -1450,6 +1471,12 @@ namespace nvhttp {
     print_req<SunshineHTTPS>(request);
 
     pt::ptree tree;
+    bool native_prepared {false};
+    auto native_rollback = util::fail_guard([&] {
+      if (native_prepared) {
+        native_display::release();
+      }
+    });
     auto g = util::fail_guard([&]() {
       std::ostringstream data;
 
@@ -1496,7 +1523,17 @@ namespace nvhttp {
       // We want to prepare display only if there are no active sessions at
       // the moment. This should be done before probing encoders as it could
       // change the active displays.
-      display_device::configure_display(config::video, *launch_session);
+      const auto policy = native_policy(current_appid);
+      native_prepared = policy != native_display::policy::disabled;
+      if (const auto error = native_display::prepare(policy, launch_session->width, launch_session->height, launch_session->fps); !error.empty()) {
+        tree.put("root.<xmlattr>.status_code", 503);
+        tree.put("root.<xmlattr>.status_message", error);
+        tree.put("root.resume", 0);
+        return;
+      }
+      if (policy == native_display::policy::disabled) {
+        display_device::configure_display(config::video, *launch_session);
+      }
 
       // Probe encoders again before streaming to ensure our chosen
       // encoder matches the active GPU (which could have changed
@@ -1535,6 +1572,7 @@ namespace nvhttp {
     tree.put("root.resume", 1);
 
     rtsp_stream::launch_session_raise(launch_session);
+    native_prepared = false;
   }
 
   /**

@@ -33,6 +33,10 @@
     "warning": "Warning!"
   },
   "apps": {
+    "native_display": "Native display policy (experimental)",
+    "native_physical": "Keep physical desktop; lock on disconnect",
+    "native_privacy": "Private virtual display at client resolution",
+    "native_display_desc": "Privacy prepares the virtual screen before capture and restores the physical layout on disconnect. Requires an installed MTT virtual display and an unlocked console. Keep legacy privacy commands in a separate application with this option disabled.",
     "actions": "Actions",
     "add_cmds": "Add Commands",
     "add_new": "Add New",

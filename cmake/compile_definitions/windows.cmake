@@ -101,6 +101,9 @@ list(PREPEND PLATFORM_LIBRARIES
         minhook::minhook
         ntdll
         setupapi
+        cfgmgr32
+        wtsapi32
+        uuid
         shlwapi
         synchronization.lib
         userenv

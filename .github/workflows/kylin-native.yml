@@ -1,0 +1,43 @@
+name: Kylin native Windows validation
+on:
+  workflow_dispatch:
+  push:
+    branches: [kylin/native-privacy-display]
+permissions:
+  contents: read
+jobs:
+  native:
+    runs-on: windows-2022
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          submodules: recursive
+      - uses: msys2/setup-msys2@66cd2cce69caa17b53920067426061ca1de3a884
+        with:
+          msystem: ucrt64
+          update: true
+          install: >-
+            git
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-ninja
+            mingw-w64-ucrt-x86_64-clang-tools-extra
+      - name: Compile and test native transaction
+        run: |
+          cmake -S tests/native-display -B cmake-build-native -G Ninja
+          cmake --build cmake-build-native
+          ctest --test-dir cmake-build-native --output-on-failure
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: native-display-test-results
+          path: cmake-build-native/Testing/Temporary/LastTest.log
+  integration:
+    uses: ./.github/workflows/ci-windows.yml
+    with:
+      publish_release: 'false'
+      release_commit: ${{ github.sha }}
+      release_version: '2026.1011.1'
