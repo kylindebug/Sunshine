@@ -737,19 +737,40 @@ namespace native_display {
     });
   }
 
-  bool capture_allowed(const std::string &name, std::uint32_t adapter_low, std::int32_t adapter_high) {
+  bool capture_allowed(const std::string &name, std::uintptr_t monitor) {
     return !instance || instance->call([&] {
       if (instance->mode != policy::privacy) {
         return true;
       }
       try {
+        MONITORINFOEXW info {};
+        info.cbSize = sizeof(info);
+        if (!monitor || !GetMonitorInfoW(reinterpret_cast<HMONITOR>(monitor), &info)) {
+          if (instance->log) {
+            instance->log("Native privacy: capture rejected an invalid monitor handle");
+          }
+          return false;
+        }
         const auto current = read();
         if (!matches(current, instance->target, instance->width, instance->height, instance->fps)) {
+          if (instance->log) {
+            instance->log("Native privacy: capture rejected a changed target, topology or mode");
+          }
           return false;
         }
         const auto &path = current.paths.front();
-        return path.sourceInfo.adapterId.LowPart == adapter_low && path.sourceInfo.adapterId.HighPart == adapter_high && source_name(path) == name;
-      } catch (...) {
+        const auto expected = source_name(path);
+        // CCD identifies the indirect display adapter; DXGI may expose this same
+        // output on its render GPU. Compare current monitor identity, not GPU LUIDs.
+        const bool allowed = win::same_capture_source(std::wstring(expected.begin(), expected.end()), std::wstring(name.begin(), name.end()), info.szDevice);
+        if (!allowed && instance->log) {
+          instance->log("Native privacy: capture source mismatch; expected=" + expected + ", DXGI=" + name);
+        }
+        return allowed;
+      } catch (const std::exception &error) {
+        if (instance->log) {
+          instance->log(std::string("Native privacy: capture identity query failed: ") + error.what());
+        }
         return false;
       }
     });
@@ -789,7 +810,7 @@ namespace native_display {
     return false;
   }
 
-  bool capture_allowed(const std::string &, std::uint32_t, std::int32_t) {
+  bool capture_allowed(const std::string &, std::uintptr_t) {
     return true;
   }
 

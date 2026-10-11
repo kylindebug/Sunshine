@@ -10,6 +10,18 @@
 #include <windows.h>
 
 namespace native_display::win {
+  /** @brief Bind a DXGI output to the freshly resolved CCD source and its live monitor.
+   * Indirect displays can be rendered on an adapter with a different LUID from CCD.
+   * @param expected Current source name of the verified exclusive virtual target.
+   * @param output DXGI output device name.
+   * @param monitor Device name returned by GetMonitorInfoW for the DXGI HMONITOR.
+   * @return True only when all three nonempty names identify the same current source.
+   */
+  inline bool same_capture_source(const std::wstring &expected, const std::wstring &output, const std::wstring &monitor) {
+    return !expected.empty() && !output.empty() && !monitor.empty() &&
+           _wcsicmp(expected.c_str(), output.c_str()) == 0 && _wcsicmp(expected.c_str(), monitor.c_str()) == 0;
+  }
+
   /** @brief Bound CCD allocations without confusing possible routes with active monitors.
    * @param flags CCD query flags.
    * @param paths Required path buffer capacity reported by Windows.

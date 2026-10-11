@@ -56,6 +56,12 @@ never permits capture to fall back to another monitor; a privacy failure request
 
 ## Validation gates
 
+DXGI capture resolves the output's live HMONITOR with GetMonitorInfoW and binds both
+device names to a fresh CCD snapshot of the exclusive virtual target at the requested
+mode. It does not compare the DXGI render GPU LUID with the CCD indirect display
+adapter LUID: on this host they differ for the same virtual output. Invalid handles,
+stale names, physical or additional targets, and changed modes still fail closed.
+
 The isolated GTest target compiles the actual Win32 implementation without changing host displays.
 The Windows workflow also builds the complete Sunshine application and runs its existing validation.
 Passing synthetic tests does not constitute a successful Moonlight hardware test.

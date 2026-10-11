@@ -513,7 +513,7 @@ namespace platf::dxgi {
           }
 
           if (desc.AttachedToDesktop && test_dxgi_duplication(adapter_tmp, output_tmp, false)) {
-            if (!native_display::capture_allowed(utf_utils::to_utf8(desc.DeviceName), adapter_desc.AdapterLuid.LowPart, adapter_desc.AdapterLuid.HighPart)) {
+            if (!native_display::capture_allowed(utf_utils::to_utf8(desc.DeviceName), reinterpret_cast<std::uintptr_t>(desc.Monitor))) {
               BOOST_LOG(error) << "Native privacy rejected a changed DXGI capture target";
               continue;
             }

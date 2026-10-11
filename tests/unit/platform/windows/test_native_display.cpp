@@ -17,6 +17,21 @@ TEST(NativeDisplay, ExistingApplicationsRemainDisabled) {
   EXPECT_THROW(native_display::parse("privcy"), std::invalid_argument);
 }
 
+TEST(NativeDisplay, IndirectCaptureUsesCurrentMonitorSourceNotRenderAdapter) {
+  using native_display::win::same_capture_source;
+  // This host exposes DISPLAY45 through CCD LUID 0:705897126 and NVIDIA
+  // DXGI LUID 0:58921. Both APIs and the live HMONITOR name the same source.
+  EXPECT_TRUE(same_capture_source(L"\\\\.\\DISPLAY45", L"\\\\.\\DISPLAY45", L"\\\\.\\DISPLAY45"));
+  EXPECT_TRUE(same_capture_source(L"\\\\.\\DISPLAY45", L"\\\\.\\display45", L"\\\\.\\DISPLAY45"));
+  EXPECT_FALSE(same_capture_source(L"\\\\.\\DISPLAY45", L"\\\\.\\DISPLAY5", L"\\\\.\\DISPLAY5"));
+  // Matching the cached output name alone cannot admit a stale/reassigned handle.
+  EXPECT_FALSE(same_capture_source(L"\\\\.\\DISPLAY45", L"\\\\.\\DISPLAY45", L"\\\\.\\DISPLAY5"));
+  EXPECT_FALSE(same_capture_source(L"\\\\.\\DISPLAY46", L"\\\\.\\DISPLAY45", L"\\\\.\\DISPLAY45"));
+  EXPECT_FALSE(same_capture_source(L"", L"", L""));
+  EXPECT_FALSE(same_capture_source(L"\\\\.\\DISPLAY45", L"", L"\\\\.\\DISPLAY45"));
+  EXPECT_FALSE(same_capture_source(L"\\\\.\\DISPLAY45", L"\\\\.\\DISPLAY45", L""));
+}
+
 TEST(NativeDisplay, PossibleRoutesAreNotLimitedToActiveMonitorCount) {
   using native_display::win::valid_query_capacity;
   // This host reports 80 possible routes with just one active physical monitor.

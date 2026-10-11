@@ -42,10 +42,10 @@ namespace native_display {
    */
   bool exclusive();
   /** @brief Validate the actual DXGI output against current private target identity.
-   * @param name Actual GDI output name. @param adapter_low Adapter LUID low half.
-   * @param adapter_high Adapter LUID high half. @return Whether capture is permitted.
+   * @param name Actual GDI output name. @param monitor Actual DXGI HMONITOR, represented without Windows headers.
+   * @return Whether capture is permitted.
    */
-  bool capture_allowed(const std::string &name, std::uint32_t adapter_low, std::int32_t adapter_high);
+  bool capture_allowed(const std::string &name, std::uintptr_t monitor);
   /** @brief Cancel only an abandoned setup belonging to this launch. @param session_id Owning launch. */
   void cancel_setup(std::uint32_t session_id);
 }  // namespace native_display
