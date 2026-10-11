@@ -123,6 +123,18 @@ TEST(NativeDisplay, PrivacyHasOneOriginAtClientMode) {
   EXPECT_EQ(value.modes[0].adapterId.LowPart, 42);
 }
 
+TEST(NativeDisplay, ExplicitRefreshUsesProgressiveScanline) {
+  DISPLAYCONFIG_PATH_INFO target {};
+  for (int fps : {30, 60, 90, 120, 240}) {
+    const auto value = native_display::win::virtual_layout(target, 1920, 1080, fps);
+    const auto &requested = value.paths.front().targetInfo;
+    EXPECT_EQ(requested.refreshRate.Numerator, static_cast<UINT32>(fps));
+    EXPECT_EQ(requested.refreshRate.Denominator, 1);
+    EXPECT_EQ(requested.scanLineOrdering, DISPLAYCONFIG_SCANLINE_ORDERING_PROGRESSIVE);
+    EXPECT_EQ(requested.modeInfoIdx, DISPLAYCONFIG_PATH_MODE_IDX_INVALID);
+  }
+}
+
 TEST(NativeDisplay, RejectsTruncatedOrInvalidSnapshot) {
   native_display::win::layout value;
   EXPECT_FALSE(native_display::win::valid(value));

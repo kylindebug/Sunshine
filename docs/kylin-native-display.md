@@ -20,6 +20,8 @@ Do not combine upstream automatic display configuration with this experimental c
 No drivers are installed, and no network, authentication, firewall or pairing settings are changed.
 
 The supported mode range is 320..7680 pixels on each axis and 1..240 Hz, subject to driver support.
+Explicit refresh rates use progressive scan-line ordering, as required by the Windows CCD API;
+unspecified scan-line ordering is only valid with an unspecified zero/zero refresh rate.
 An unsupported mode fails explicitly instead of temporarily streaming a lower resolution.
 Privacy requires a clean physical starting topology. Locked-console and headless starts are rejected
 when Windows cannot prepare the private topology. Use the existing Desktop entry to unlock first.

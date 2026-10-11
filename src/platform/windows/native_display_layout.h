@@ -69,7 +69,8 @@ namespace native_display::win {
     path.targetInfo.rotation = DISPLAYCONFIG_ROTATION_IDENTITY;
     path.targetInfo.scaling = DISPLAYCONFIG_SCALING_IDENTITY;
     path.targetInfo.refreshRate = {static_cast<UINT32>(fps), 1};
-    path.targetInfo.scanLineOrdering = DISPLAYCONFIG_SCANLINE_ORDERING_UNSPECIFIED;
+    // Windows permits UNSPECIFIED only with a zero/zero refresh rate.
+    path.targetInfo.scanLineOrdering = DISPLAYCONFIG_SCANLINE_ORDERING_PROGRESSIVE;
     return {{path}, {mode}};
   }
 
