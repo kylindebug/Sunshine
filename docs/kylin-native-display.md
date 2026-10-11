@@ -27,25 +27,30 @@ when Windows cannot prepare the private topology. Use the existing Desktop entry
 ## Lifecycle and recovery
 
 The controller uses native stream start/end calls, not log parsing or UDP-port heuristics.
-A setup with no real stream expires after 30 seconds. Resume failures roll back as launch failures do.
+A setup with no real stream expires after 30 seconds. Its launch-specific lease must be committed before
+video starts; late, mismatched and repeated commits are rejected. Resume failures roll back as launch failures do.
+Experimental native applications currently allow one stream at a time and end after eight hours.
 A dedicated worker owns the named mutex shared with the retained PrivacyGuard and DisplayKeeper.
 The physical snapshot is committed before the adapter is enabled. Startup reads a bounded recovery journal.
 Unsuccessful recovery retains its journal and adapter rather than disabling the only remaining output.
+Lock confirmation precedes restore; the worker attaches to the locked input desktop without unlocking it.
+If a captured physical monitor disappears, recovery requests a connected physical topology from Windows.
 Physical keyboard events are blocked during privacy, injected Moonlight events remain allowed.
 Press and release F12 three times within two seconds for local emergency recovery.
 This is an input convenience, not protection against someone with administrative or physical access.
 
 Ordinary physical use keeps the original display keeper for connector-specific saved preferences.
 Native session restore preserves the captured primary, positions and modes; it does not force Win+P internal-only.
-If a captured physical monitor disappears during streaming, exact recovery may remain pending until it returns.
-The original scripts therefore remain the operational fallback until real hotplug validation is complete.
+An exact layout cannot be restored when its physical monitor has been unplugged; fallback and connector-specific
+preferences still need real hotplug validation. The original scripts remain the operational fallback.
 
 ## Black-frame scope
 
 Preparation before encoder probing removes the scripted physical-to-virtual transition after video starts.
 Windows may still blank physical monitors during a required modeset. This branch does not claim zero black
 frames for GPU resets, driver failures, lock/unlock or client decoder restarts. No stale video frames are
-cached across clients or sessions to hide these events.
+cached across clients or sessions to hide these events. A private target that disappears or changes identity
+never permits capture to fall back to another monitor; a privacy failure requests stream termination.
 
 ## Validation gates
 

@@ -552,6 +552,7 @@ namespace stream {
     } control;  ///< Runtime state for the encrypted GameStream control channel.
 
     std::uint32_t launch_session_id;  ///< RTSP launch-session ID associated with this stream.
+    bool native_display_required {};  ///< A matching native preparation is mandatory.
     std::string client_cert;  ///< PEM certificate for the paired client owning the stream.
     std::string input_session_id;  ///< Stable client identity used to retain input devices across resume.
 
@@ -2265,6 +2266,16 @@ namespace stream {
      * @brief Start the audio, video, and control workers for a streaming session.
      */
     int start(session_t &session, const std::string &addr_string) {
+      if (session.native_display_required && !native_display::connected(session.launch_session_id)) {
+        BOOST_LOG(error) << "Native display preparation expired or changed; refusing late stream startup";
+        return -1;
+      }
+      bool started = false;
+      auto native_start_rollback = util::fail_guard([&] {
+        if (session.native_display_required && !started) {
+          native_display::release();
+        }
+      });
       session.input = input::alloc(session.mail, session.input_session_id);
 
       session.broadcast_ref = broadcast.ref();
@@ -2297,13 +2308,13 @@ namespace stream {
 
       // If this is the first session, invoke the platform callbacks
       if (++running_sessions == 1) {
-        native_display::connected();
         platf::streaming_will_start();
 #if defined SUNSHINE_TRAY && SUNSHINE_TRAY >= 1
         system_tray::update_tray_playing(proc::proc.get_last_run_app_name());
 #endif
       }
 
+      started = true;
       return 0;
     }
 
@@ -2317,6 +2328,7 @@ namespace stream {
 
       session->shutdown_event = mail->event<bool>(mail::shutdown);
       session->launch_session_id = launch_session.id;
+      session->native_display_required = launch_session.native_display_required;
       session->client_cert = launch_session.client_cert;
       session->input_session_id = launch_session.client_cert.empty() ? launch_session.unique_id : launch_session.client_cert;
 

@@ -1322,13 +1322,6 @@ namespace nvhttp {
     }
   }
 
-  /**
-   * @brief Launch the requested application for a GameStream session.
-   *
-   * @param host_audio Host audio.
-   * @param response HTTP response object to populate.
-   * @param request HTTP request data from the client.
-   */
   /** @brief Select native display policy by configured application ID. */
   native_display::policy native_policy(int appid) {
     for (const auto &app : proc::proc.get_apps()) {
@@ -1339,11 +1332,22 @@ namespace nvhttp {
     return native_display::policy::disabled;
   }
 
+  /** @brief Serialize launch/resume preparation through encoder probing. */
+  std::mutex launch_preparation_mutex;
+
+  /**
+   * @brief Launch the requested application for a GameStream session.
+   * @param host_audio Host audio.
+   * @param response HTTP response object to populate.
+   * @param request HTTP request data from the client.
+   */
   void launch(bool &host_audio, resp_https_t response, req_https_t request) {
+    std::lock_guard preparation_lock(launch_preparation_mutex);
     print_req<SunshineHTTPS>(request);
 
     pt::ptree tree;
     bool revert_display_configuration {false};
+    bool native_prepared {false};
     auto g = util::fail_guard([&]() {
       std::ostringstream data;
 
@@ -1356,7 +1360,9 @@ namespace nvhttp {
       response->close_connection_after_response = true;
 
       if (revert_display_configuration) {
-        native_display::release();
+        if (native_prepared) {
+          native_display::release();
+        }
         display_device::revert_configuration();
       }
     });
@@ -1388,6 +1394,13 @@ namespace nvhttp {
 
     host_audio = util::from_view(get_arg(args, "localAudioPlayMode"));
     auto launch_session = make_launch_session(host_audio, args);
+    launch_session->native_display_required = native_policy(static_cast<int>(appid)) != native_display::policy::disabled;
+    if (launch_session->native_display_required && rtsp_stream::session_count() != 0) {
+      tree.put("root.<xmlattr>.status_code", 409);
+      tree.put("root.<xmlattr>.status_message", "Native display mode currently supports one stream at a time");
+      tree.put("root.gamesession", 0);
+      return;
+    }
 
     if (rtsp_stream::session_count() == 0) {
       // The display should be restored in case something fails as there are no other sessions.
@@ -1397,7 +1410,13 @@ namespace nvhttp {
       // the moment. This should be done before probing encoders as it could
       // change the active displays.
       const auto policy = native_policy(static_cast<int>(appid));
-      if (const auto error = native_display::prepare(policy, launch_session->width, launch_session->height, launch_session->fps); !error.empty()) {
+      if (policy != native_display::policy::disabled && config::video.dd.configuration_option != config::video_t::dd_t::config_option_e::disabled) {
+        tree.put("root.<xmlattr>.status_code", 503);
+        tree.put("root.<xmlattr>.status_message", "Disable automatic display configuration before using a native display application");
+        tree.put("root.gamesession", 0);
+        return;
+      }
+      if (const auto error = native_display::prepare(launch_session->id, policy, launch_session->width, launch_session->height, launch_session->fps); !error.empty()) {
         tree.put("root.<xmlattr>.status_code", 503);
         tree.put("root.<xmlattr>.status_message", error);
         tree.put("root.gamesession", 0);
@@ -1405,6 +1424,8 @@ namespace nvhttp {
       }
       if (policy == native_display::policy::disabled) {
         display_device::configure_display(config::video, *launch_session);
+      } else {
+        native_prepared = true;
       }
 
       // Probe encoders again before streaming to ensure our chosen
@@ -1468,6 +1489,7 @@ namespace nvhttp {
    * @param request HTTP request data from the client.
    */
   void resume(bool &host_audio, resp_https_t response, req_https_t request) {
+    std::lock_guard preparation_lock(launch_preparation_mutex);
     print_req<SunshineHTTPS>(request);
 
     pt::ptree tree;
@@ -1518,14 +1540,26 @@ namespace nvhttp {
       host_audio = util::from_view(get_arg(args, "localAudioPlayMode"));
     }
     const auto launch_session = make_launch_session(host_audio, args);
+    launch_session->native_display_required = native_policy(current_appid) != native_display::policy::disabled;
+    if (launch_session->native_display_required && !no_active_sessions) {
+      tree.put("root.<xmlattr>.status_code", 409);
+      tree.put("root.<xmlattr>.status_message", "Native display mode currently supports one stream at a time");
+      tree.put("root.resume", 0);
+      return;
+    }
 
     if (no_active_sessions) {
       // We want to prepare display only if there are no active sessions at
       // the moment. This should be done before probing encoders as it could
       // change the active displays.
       const auto policy = native_policy(current_appid);
-      native_prepared = policy != native_display::policy::disabled;
-      if (const auto error = native_display::prepare(policy, launch_session->width, launch_session->height, launch_session->fps); !error.empty()) {
+      if (policy != native_display::policy::disabled && config::video.dd.configuration_option != config::video_t::dd_t::config_option_e::disabled) {
+        tree.put("root.<xmlattr>.status_code", 503);
+        tree.put("root.<xmlattr>.status_message", "Disable automatic display configuration before using a native display application");
+        tree.put("root.resume", 0);
+        return;
+      }
+      if (const auto error = native_display::prepare(launch_session->id, policy, launch_session->width, launch_session->height, launch_session->fps); !error.empty()) {
         tree.put("root.<xmlattr>.status_code", 503);
         tree.put("root.<xmlattr>.status_message", error);
         tree.put("root.resume", 0);
@@ -1533,6 +1567,8 @@ namespace nvhttp {
       }
       if (policy == native_display::policy::disabled) {
         display_device::configure_display(config::video, *launch_session);
+      } else {
+        native_prepared = true;
       }
 
       // Probe encoders again before streaming to ensure our chosen

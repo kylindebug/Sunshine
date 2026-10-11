@@ -19,6 +19,7 @@ namespace rtsp_stream {
    */
   struct launch_session_t {
     uint32_t id;  ///< RTSP launch-session identifier assigned before stream startup.
+    bool native_display_required {};  ///< Commit the prepared display lease before video starts.
 
     crypto::aes_t gcm_key;  ///< AES-GCM key negotiated for encrypted RTSP messages.
     crypto::aes_t iv;  ///< Initial RTSP AES-GCM IV supplied by the client.

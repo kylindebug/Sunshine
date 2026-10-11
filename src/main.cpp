@@ -298,7 +298,10 @@ int main(int argc, char *argv[]) {
   auto display_device_deinit_guard = display_device::init(platf::appdata() / "display_device.state", config::video);
   native_display::init(platf::appdata() / "native_display.state", [](const auto &message) {
     BOOST_LOG(info) << message;
-  });
+  },
+                       [] {
+                         mail::man->event<bool>(mail::broadcast_shutdown)->raise(true);
+                       });
   auto native_display_guard = util::fail_guard([] {
     native_display::shutdown();
   });

@@ -1506,6 +1506,12 @@ namespace video {
   void refresh_displays(platf::mem_type_e dev_type, std::vector<std::string> &display_names, int &current_display_index) {
     // It is possible that the output name may be empty even if it wasn't before (device disconnected) or vice-versa
     const auto output_name {native_display::output(display_device::map_output_name(config::video.output_name))};
+    if (native_display::exclusive()) {
+      // Never fall back to a physical output when a private target disappears.
+      display_names = {output_name};
+      current_display_index = 0;
+      return;
+    }
     std::string current_display_name;
 
     // If we have a current display index, let's start with that

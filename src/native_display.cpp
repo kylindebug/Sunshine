@@ -3,6 +3,8 @@
  */
 #include "native_display.h"
 
+#include "native_display_state.h"
+
 #include <stdexcept>
 
 #ifdef _WIN32
@@ -146,11 +148,95 @@ namespace native_display {
       }
     }
 
+    /** @brief Read console lock state; unknown is never interpreted as locked. */
+    int lock_state() {
+      DWORD session {};
+      if (!ProcessIdToSessionId(GetCurrentProcessId(), &session) || session != WTSGetActiveConsoleSessionId()) {
+        return -1;
+      }
+      LPWSTR buffer {};
+      DWORD bytes {};
+      if (!WTSQuerySessionInformationW(WTS_CURRENT_SERVER_HANDLE, session, WTSSessionInfoEx, &buffer, &bytes)) {
+        return -1;
+      }
+      int result = -1;
+      if (bytes >= sizeof(WTSINFOEXW)) {
+        const auto *info = reinterpret_cast<const WTSINFOEXW *>(buffer);
+        if (info->Level == 1 && info->Data.WTSInfoExLevel1.SessionId == session) {
+          result = info->Data.WTSInfoExLevel1.SessionFlags;
+        }
+      }
+      WTSFreeMemory(buffer);
+      return result;
+    }
+
+    /** @brief Attach only the worker thread to the current input desktop for CCD access. */
+    class input_desktop {
+      HDESK previous {GetThreadDesktop(GetCurrentThreadId())};  ///< Borrowed desktop.
+      HDESK current {};  ///< Owned desktop handle.
+
+    public:
+      /** @brief Open the current desktop without displaying or unlocking it. */
+      input_desktop() {
+        current = OpenInputDesktop(0, FALSE, GENERIC_ALL);
+        if (!current || !SetThreadDesktop(current)) {
+          if (current) {
+            CloseDesktop(current);
+          }
+          throw std::runtime_error("Cannot access input desktop for display recovery; journal retained");
+        }
+      }
+
+      /** @brief Restore worker desktop and release only the owned handle. */
+      ~input_desktop() {
+        SetThreadDesktop(previous);
+        CloseDesktop(current);
+      }
+    };
+
+    /** @brief Recover onto connected physical targets if a saved external monitor was removed. */
+    void physical_fallback(const layout &baseline) {
+      auto all = read(QDC_ALL_PATHS);
+      std::vector<DISPLAYCONFIG_PATH_INFO> targets;
+      for (const auto &path : all.paths) {
+        if (!path.targetInfo.targetAvailable || is_virtual(path)) {
+          continue;
+        }
+        const auto same = [&](const auto &other) {
+          return other.targetInfo.id == path.targetInfo.id && other.targetInfo.adapterId.LowPart == path.targetInfo.adapterId.LowPart && other.targetInfo.adapterId.HighPart == path.targetInfo.adapterId.HighPart;
+        };
+        if (std::any_of(targets.begin(), targets.end(), same)) {
+          continue;
+        }
+        if (std::any_of(baseline.paths.begin(), baseline.paths.end(), same)) {
+          targets.push_back(path);
+        }
+      }
+      if (targets.empty()) {
+        auto it = std::find_if(all.paths.begin(), all.paths.end(), [](const auto &path) {
+          return path.targetInfo.targetAvailable && !is_virtual(path);
+        });
+        if (it == all.paths.end()) {
+          throw std::runtime_error("No physical display is available; retaining private output");
+        }
+        targets.push_back(*it);
+      }
+      for (auto &path : targets) {
+        path.flags = DISPLAYCONFIG_PATH_ACTIVE;
+        path.sourceInfo.modeInfoIdx = DISPLAYCONFIG_PATH_MODE_IDX_INVALID;
+        path.targetInfo.modeInfoIdx = DISPLAYCONFIG_PATH_MODE_IDX_INVALID;
+      }
+      check(SetDisplayConfig(static_cast<UINT32>(targets.size()), targets.data(), 0, nullptr, SDC_TOPOLOGY_SUPPLIED | SDC_APPLY | SDC_ALLOW_PATH_ORDER_CHANGES), "Restore connected physical topology");
+    }
+
     /** @brief Serialize all Windows operations on the thread that owns the legacy guard mutex. */
     class controller {
     public:
       std::filesystem::path journal;  ///< Persistent rollback snapshot.
       std::function<void(const std::string &)> log;  ///< Diagnostic callback.
+      std::function<void()> stop_streams;  ///< Nonblocking request to stop RTSP sessions.
+      setup_lease lease;  ///< Generation-bound preparation.
+      bool abort_requested {};  ///< Prevent repeated stream termination requests.
       std::mutex mutex;  ///< Protects command queue.
       std::condition_variable cv;  ///< Wakes command processing.
       std::queue<std::function<void()>> jobs;  ///< Synchronous commands.
@@ -160,6 +246,7 @@ namespace native_display {
       bool owns_gate {};  ///< Worker has acquired gate.
       bool armed {};  ///< Journal must be restored even if preparation failed.
       bool live {};  ///< At least one stream has started.
+      bool pending {};  ///< A successful preparation is awaiting its RTSP connection.
       policy mode {policy::disabled};  ///< Current policy.
       layout baseline;  ///< Exact pre-session physical topology, including primary and positions.
       std::wstring target;  ///< Verified private target.
@@ -269,7 +356,6 @@ namespace native_display {
         if (!std::filesystem::exists(journal)) {
           return;
         }
-        acquire();
         std::ifstream file(journal, std::ios::binary);
         UINT32 header[3] {};
         file.read(reinterpret_cast<char *>(header), sizeof(header));
@@ -283,6 +369,8 @@ namespace native_display {
         if (!file || file.peek() != EOF || !win::valid(baseline)) {
           throw std::runtime_error("Truncated native display recovery journal");
         }
+        file.close();
+        acquire();
         armed = true;
         mode = policy::privacy;
         restore();
@@ -297,10 +385,23 @@ namespace native_display {
         }
         if (armed) {
           // Lock before making the private desktop visible on physical monitors.
-          if (!LockWorkStation()) {
+          if (!confirm_lock(lock_state, [] {
+                return LockWorkStation() != FALSE;
+              },
+                            [] {
+                              std::this_thread::sleep_for(100ms);
+                            })) {
             throw std::runtime_error("Cannot lock desktop; retaining private display and journal");
           }
-          apply(baseline);
+          input_desktop desktop;
+          try {
+            apply(baseline);
+          } catch (const std::exception &error) {
+            if (log) {
+              log(std::string("Saved topology unavailable: ") + error.what());
+            }
+            physical_fallback(baseline);
+          }
           auto current = read();
           if (current.paths.empty() || std::any_of(current.paths.begin(), current.paths.end(), is_virtual)) {
             throw std::runtime_error("Physical restore not verified; retaining virtual adapter");
@@ -318,6 +419,9 @@ namespace native_display {
         }
         mode = policy::disabled;
         live = false;
+        pending = false;
+        lease.id.reset();
+        abort_requested = false;
         selector.clear();
         target.clear();
         if (owns_gate) {
@@ -327,7 +431,10 @@ namespace native_display {
       }
 
       /** @brief Prepare one application without polling Sunshine logs or UDP listeners. */
-      std::string prepare_mode(policy requested, int width, int height, int fps) {
+      std::string prepare_mode(std::uint32_t session_id, policy requested, int width, int height, int fps) {
+        if (pending || live) {
+          return "A native display session is already prepared or active";
+        }
         try {
           if (requested == policy::disabled) {
             return {};
@@ -342,6 +449,8 @@ namespace native_display {
           live = false;
           deadline = std::chrono::steady_clock::now() + 30s;
           if (requested == policy::physical) {
+            pending = true;
+            lease = {session_id, deadline};
             return {};
           }
           if (!win::valid_mode(width, height, fps)) {
@@ -395,6 +504,8 @@ namespace native_display {
                 throw std::runtime_error("Cannot install native privacy keyboard filter");
               }
               deadline = std::chrono::steady_clock::now() + 30s;
+              pending = true;
+              lease = {session_id, deadline};
               if (log) {
                 log("Native privacy: final display verified before encoder probing");
               }
@@ -444,15 +555,14 @@ namespace native_display {
           }
           if (emergency) {
             emergency = false;
-            try {
-              restore();
-            } catch (const std::exception &error) {
-              if (log) {
-                log(error.what());
-              }
+            if (live) {
+              abort_requested = true;
+              stop_streams();
+            } else {
+              deadline = std::chrono::steady_clock::now();
             }
           }
-          if (live && mode == policy::privacy && armed) {
+          if (live && !abort_requested && mode == policy::privacy && armed) {
             try {
               auto current = read();
               if (!matches(current, target, width, height, fps)) {
@@ -473,9 +583,13 @@ namespace native_display {
               if (log) {
                 log(error.what());
               }
-              live = false;
-              deadline = std::chrono::steady_clock::now() + 5s;
+              abort_requested = true;
+              stop_streams();
             }
+          }
+          if (live && !abort_requested && std::chrono::steady_clock::now() >= deadline) {
+            abort_requested = true;
+            stop_streams();
           }
           if (!live && mode != policy::disabled && std::chrono::steady_clock::now() >= deadline) {
             try {
@@ -504,11 +618,12 @@ namespace native_display {
     std::unique_ptr<controller> instance;  ///< Initialized before HTTP workers and joined after them.
   }  // namespace
 
-  void init(const std::filesystem::path &path, std::function<void(const std::string &)> log) {
+  void init(const std::filesystem::path &path, std::function<void(const std::string &)> log, std::function<void()> stop_streams) {
     instance = std::make_unique<controller>();
     instance->call([&] {
       instance->journal = path;
       instance->log = std::move(log);
+      instance->stop_streams = std::move(stop_streams);
       try {
         instance->recover();
       } catch (const std::exception &error) {
@@ -521,7 +636,7 @@ namespace native_display {
     instance.reset();
   }
 
-  std::string prepare(policy mode, int width, int height, int fps) {
+  std::string prepare(std::uint32_t session_id, policy mode, int width, int height, int fps) {
     if (mode == policy::disabled) {
       return {};
     }
@@ -529,16 +644,32 @@ namespace native_display {
       return "Native display controller is not initialized";
     }
     return instance->call([=] {
-      return instance->prepare_mode(mode, width, height, fps);
+      return instance->prepare_mode(session_id, mode, width, height, fps);
     });
   }
 
-  void connected() {
+  bool connected(std::uint32_t session_id) {
     if (instance) {
-      instance->call([] {
-        instance->live = instance->mode != policy::disabled;
+      return instance->call([=] {
+        if (!instance->pending || instance->mode == policy::disabled || !instance->lease.commit(session_id, std::chrono::steady_clock::now())) {
+          return false;
+        }
+        if (instance->mode == policy::privacy) {
+          try {
+            if (!matches(read(), instance->target, instance->width, instance->height, instance->fps)) {
+              return false;
+            }
+          } catch (...) {
+            return false;
+          }
+        }
+        instance->live = true;
+        instance->pending = false;
+        instance->deadline = std::chrono::steady_clock::now() + 8h;
+        return true;
       });
     }
+    return false;
   }
 
   void release() {
@@ -557,20 +688,41 @@ namespace native_display {
 
   std::string output(const std::string &fallback) {
     return instance ? instance->call([&] {
+      if (instance->mode == policy::privacy) {
+        try {
+          if (!instance->selector.empty() && matches(read(), instance->target, instance->width, instance->height, instance->fps)) {
+            return instance->selector;
+          }
+        } catch (...) {}
+        // A disconnected GDI name can be reassigned to a physical monitor. Never reuse it blindly.
+        return std::string("\\\\.\\SUNSHINE_PRIVACY_UNAVAILABLE");
+      }
       return instance->selector.empty() ? fallback : instance->selector;
     }) :
                       fallback;
   }
+
+  bool exclusive() {
+    return instance && instance->call([] {
+      return instance->mode == policy::privacy;
+    });
+  }
 #else
-  void init(const std::filesystem::path &, std::function<void(const std::string &)>) {}
+  void init(const std::filesystem::path &, std::function<void(const std::string &)>, std::function<void()>) {}
 
   void shutdown() {}
 
-  std::string prepare(policy mode, int, int, int) {
+  std::string prepare(std::uint32_t, policy mode, int, int, int) {
     return mode == policy::disabled ? "" : "Native display policies require Windows";
   }
 
-  void connected() {}
+  bool connected(std::uint32_t) {
+    return false;
+  }
+
+  bool exclusive() {
+    return false;
+  }
 
   void release() {}
 

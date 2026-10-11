@@ -2,9 +2,11 @@
  * @brief Native display policy and CCD construction regressions; no hardware is mutated.
  */
 #include "src/native_display.h"
-#include "src/platform/windows/native_display_layout.h"
+#include "src/native_display_state.h"
+#ifdef _WIN32
+  #include "src/platform/windows/native_display_layout.h"
 
-#include <gtest/gtest.h>
+  #include <gtest/gtest.h>
 
 TEST(NativeDisplay, ExistingApplicationsRemainDisabled) {
   EXPECT_EQ(native_display::parse(""), native_display::policy::disabled);
@@ -12,6 +14,58 @@ TEST(NativeDisplay, ExistingApplicationsRemainDisabled) {
   EXPECT_EQ(native_display::parse("physical"), native_display::policy::physical);
   EXPECT_EQ(native_display::parse("privacy"), native_display::policy::privacy);
   EXPECT_THROW(native_display::parse("privcy"), std::invalid_argument);
+}
+
+TEST(NativeDisplay, LateAndWrongHandshakesCannotCommit) {
+  using namespace std::chrono_literals;
+  auto now = std::chrono::steady_clock::time_point {};
+  native_display::setup_lease lease {12, now + 30s};
+  EXPECT_FALSE(lease.commit(13, now));
+  EXPECT_FALSE(lease.commit(12, now + 30s));
+  EXPECT_TRUE(lease.id.has_value());
+  lease = {13, now + 60s};
+  EXPECT_FALSE(lease.commit(12, now + 31s));
+  EXPECT_TRUE(lease.commit(13, now + 31s));
+  EXPECT_FALSE(lease.commit(13, now + 32s));
+}
+
+TEST(NativeDisplay, AlreadyLockedDoesNotRequestLockAgain) {
+  bool requested = false;
+  EXPECT_TRUE(native_display::confirm_lock([] {
+    return 0;
+  },
+                                           [&] {
+                                             requested = true;
+                                             return false;
+                                           },
+                                           [] {
+                                           }));
+  EXPECT_FALSE(requested);
+}
+
+TEST(NativeDisplay, LockRequestSuccessRequiresConfirmation) {
+  int polls = 0;
+  EXPECT_FALSE(native_display::confirm_lock([] {
+    return -1;
+  },
+                                            [] {
+                                              return true;
+                                            },
+                                            [&] {
+                                              ++polls;
+                                            }));
+  EXPECT_EQ(polls, 20);
+  polls = 0;
+  EXPECT_TRUE(native_display::confirm_lock([&] {
+    return polls >= 3 ? 0 : 1;
+  },
+                                           [] {
+                                             return true;
+                                           },
+                                           [&] {
+                                             ++polls;
+                                           }));
+  EXPECT_EQ(polls, 3);
 }
 
 TEST(NativeDisplay, InvalidClientModeIsRejectedWithoutFallback) {
@@ -69,3 +123,4 @@ TEST(NativeDisplay, DoesNotNormalizeThePhysicalPrimary) {
   EXPECT_EQ(snapshot.modes[0].sourceMode.position.x, -1920);
   EXPECT_EQ(privacy.modes[0].sourceMode.position.x, 0);
 }
+#endif
