@@ -26,6 +26,7 @@ extern "C" {
 #include "globals.h"
 #include "input.h"
 #include "logging.h"
+#include "native_display.h"
 #include "network.h"
 #include "rtsp.h"
 #include "stream.h"
@@ -607,6 +608,9 @@ namespace rtsp_stream {
         if (!ec) {
           auto discarded = launch_event.pop(0s);
           if (discarded) {
+            if (discarded->native_display_required) {
+              native_display::cancel_setup(discarded->id);
+            }
             BOOST_LOG(debug) << "Event timeout: "sv << discarded->unique_id;
           }
         }

@@ -19,6 +19,7 @@
   #include <future>
   #include <mutex>
   #include <queue>
+  #include <sddl.h>
   #include <setupapi.h>
   #include <thread>
   #include <wtsapi32.h>
@@ -80,9 +81,7 @@ namespace native_display {
 
     /** @brief Only the explicitly supported MTT monitor may become the privacy target. */
     bool is_virtual(const DISPLAYCONFIG_PATH_INFO &path) {
-      auto name = identity(path);
-      std::transform(name.begin(), name.end(), name.begin(), towupper);
-      return name.find(L"MONITOR#MTT1337#") != std::wstring::npos;
+      return win::is_mtt_target(identity(path));
     }
 
     /** @brief Apply a validated topology and save its mode for the next activation. */
@@ -104,6 +103,18 @@ namespace native_display {
       const auto &mode = value.modes[path.sourceInfo.modeInfoIdx].sourceMode;
       const auto &rate = path.targetInfo.refreshRate;
       return mode.width == static_cast<UINT32>(width) && mode.height == static_cast<UINT32>(height) && mode.position.x == 0 && mode.position.y == 0 && rate.Denominator && rate.Numerator == static_cast<UINT32>(fps) * rate.Denominator;
+    }
+
+    /** @brief Resolve the current source name instead of retaining a stale GDI alias. */
+    std::string source_name(const DISPLAYCONFIG_PATH_INFO &path) {
+      DISPLAYCONFIG_SOURCE_DEVICE_NAME name {};
+      name.header = {DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME, sizeof(name), path.sourceInfo.adapterId, path.sourceInfo.id};
+      check(DisplayConfigGetDeviceInfo(&name.header), "Capture output selection");
+      std::string result;
+      for (const wchar_t *c = name.viewGdiDeviceName; *c; ++c) {
+        result += static_cast<char>(*c);
+      }
+      return result;
     }
 
     /** @brief Enable/disable only a single verified Root\\MttVDD adapter using Config Manager. */
@@ -318,7 +329,13 @@ namespace native_display {
           return;
         }
         if (!gate) {
-          gate = CreateMutexW(nullptr, FALSE, L"Local\\SunshinePrivacyGuard");
+          PSECURITY_DESCRIPTOR descriptor {};
+          if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(L"D:(A;;GA;;;SY)(A;;GA;;;BA)(A;;GA;;;IU)", SDDL_REVISION_1, &descriptor, nullptr)) {
+            throw std::runtime_error("Cannot construct display coordination security descriptor");
+          }
+          SECURITY_ATTRIBUTES attributes {sizeof(attributes), descriptor, FALSE};
+          gate = CreateMutexW(&attributes, FALSE, L"Local\\SunshinePrivacyGuard");
+          LocalFree(descriptor);
         }
         if (!gate) {
           throw std::runtime_error("Cannot create privacy coordination mutex");
@@ -651,17 +668,27 @@ namespace native_display {
   bool connected(std::uint32_t session_id) {
     if (instance) {
       return instance->call([=] {
-        if (!instance->pending || instance->mode == policy::disabled || !instance->lease.commit(session_id, std::chrono::steady_clock::now())) {
+        if (!instance->pending || instance->mode == policy::disabled || instance->lease.id != session_id) {
           return false;
         }
-        if (instance->mode == policy::privacy) {
-          try {
-            if (!matches(read(), instance->target, instance->width, instance->height, instance->fps)) {
-              return false;
-            }
-          } catch (...) {
-            return false;
+        try {
+          if (instance->mode == policy::privacy && !matches(read(), instance->target, instance->width, instance->height, instance->fps)) {
+            throw std::runtime_error("Private display changed before stream startup");
           }
+          if (!instance->lease.commit(session_id, std::chrono::steady_clock::now())) {
+            throw std::runtime_error("Native setup lease expired");
+          }
+        } catch (const std::exception &error) {
+          instance->log(error.what());
+          instance->pending = false;
+          instance->lease.id.reset();
+          try {
+            instance->restore();
+          } catch (const std::exception &recovery) {
+            instance->log(recovery.what());
+            instance->deadline = std::chrono::steady_clock::now() + 5s;
+          }
+          return false;
         }
         instance->live = true;
         instance->pending = false;
@@ -690,7 +717,9 @@ namespace native_display {
     return instance ? instance->call([&] {
       if (instance->mode == policy::privacy) {
         try {
-          if (!instance->selector.empty() && matches(read(), instance->target, instance->width, instance->height, instance->fps)) {
+          const auto current = read();
+          if (matches(current, instance->target, instance->width, instance->height, instance->fps)) {
+            instance->selector = source_name(current.paths.front());
             return instance->selector;
           }
         } catch (...) {}
@@ -706,6 +735,42 @@ namespace native_display {
     return instance && instance->call([] {
       return instance->mode == policy::privacy;
     });
+  }
+
+  bool capture_allowed(const std::string &name, std::uint32_t adapter_low, std::int32_t adapter_high) {
+    return !instance || instance->call([&] {
+      if (instance->mode != policy::privacy) {
+        return true;
+      }
+      try {
+        const auto current = read();
+        if (!matches(current, instance->target, instance->width, instance->height, instance->fps)) {
+          return false;
+        }
+        const auto &path = current.paths.front();
+        return path.sourceInfo.adapterId.LowPart == adapter_low && path.sourceInfo.adapterId.HighPart == adapter_high && source_name(path) == name;
+      } catch (...) {
+        return false;
+      }
+    });
+  }
+
+  void cancel_setup(std::uint32_t session_id) {
+    if (instance) {
+      instance->call([=] {
+        if (!instance->pending || instance->lease.id != session_id) {
+          return;
+        }
+        instance->pending = false;
+        instance->lease.id.reset();
+        try {
+          instance->restore();
+        } catch (const std::exception &error) {
+          instance->log(error.what());
+          instance->deadline = std::chrono::steady_clock::now() + 5s;
+        }
+      });
+    }
   }
 #else
   void init(const std::filesystem::path &, std::function<void(const std::string &)>, std::function<void()>) {}
@@ -723,6 +788,12 @@ namespace native_display {
   bool exclusive() {
     return false;
   }
+
+  bool capture_allowed(const std::string &, std::uint32_t, std::int32_t) {
+    return true;
+  }
+
+  void cancel_setup(std::uint32_t) {}
 
   void release() {}
 

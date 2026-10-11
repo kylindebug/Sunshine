@@ -42,6 +42,7 @@ typedef enum _D3DKMT_GPU_PREFERENCE_QUERY_STATE : DWORD {
 #include "src/config.h"
 #include "src/display_device.h"
 #include "src/logging.h"
+#include "src/native_display.h"
 #include "src/platform/common.h"
 #include "src/video.h"
 
@@ -512,6 +513,10 @@ namespace platf::dxgi {
           }
 
           if (desc.AttachedToDesktop && test_dxgi_duplication(adapter_tmp, output_tmp, false)) {
+            if (!native_display::capture_allowed(utf_utils::to_utf8(desc.DeviceName), adapter_desc.AdapterLuid.LowPart, adapter_desc.AdapterLuid.HighPart)) {
+              BOOST_LOG(error) << "Native privacy rejected a changed DXGI capture target";
+              continue;
+            }
             output = std::move(output_tmp);
 
             offset_x = desc.DesktopCoordinates.left;

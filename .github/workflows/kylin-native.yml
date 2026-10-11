@@ -5,6 +5,9 @@ on:
     branches: [kylin/native-privacy-display]
 permissions:
   contents: read
+concurrency:
+  group: kylin-native-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
   native:
     runs-on: windows-2022
@@ -13,8 +16,11 @@ jobs:
         shell: msys2 {0}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          submodules: recursive
+      - name: Fetch native test dependency only
+        shell: pwsh
+        run: |
+          git submodule update --init --depth 1 third-party/lizardbyte-common
+          git -C third-party/lizardbyte-common submodule update --init --depth 1 third-party/googletest
       - uses: msys2/setup-msys2@66cd2cce69caa17b53920067426061ca1de3a884
         with:
           msystem: ucrt64
@@ -24,7 +30,6 @@ jobs:
             mingw-w64-ucrt-x86_64-gcc
             mingw-w64-ucrt-x86_64-cmake
             mingw-w64-ucrt-x86_64-ninja
-            mingw-w64-ucrt-x86_64-clang-tools-extra
       - name: Compile and test native transaction
         run: |
           cmake -S tests/native-display -B cmake-build-native -G Ninja

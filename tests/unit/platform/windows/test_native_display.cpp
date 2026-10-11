@@ -6,6 +6,7 @@
 #ifdef _WIN32
   #include "src/platform/windows/native_display_layout.h"
 
+  #include <fstream>
   #include <gtest/gtest.h>
 
 TEST(NativeDisplay, ExistingApplicationsRemainDisabled) {
@@ -79,6 +80,14 @@ TEST(NativeDisplay, InvalidClientModeIsRejectedWithoutFallback) {
   EXPECT_TRUE(valid_mode(2560, 1600, 120));
 }
 
+TEST(NativeDisplay, UsesRealCcdMonitorPathNotPnpInstancePrefix) {
+  using native_display::win::is_mtt_target;
+  EXPECT_TRUE(is_mtt_target(L"\\\\?\\DISPLAY#MTT1337#1&2#{device-guid}"));
+  EXPECT_TRUE(is_mtt_target(L"\\\\?\\display#mtt1337#1&2#{device-guid}"));
+  EXPECT_FALSE(is_mtt_target(L"\\\\?\\DISPLAY#SAM0DD3#1&2#{device-guid}"));
+  EXPECT_FALSE(is_mtt_target(L"\\\\?\\DISPLAY#MTT1337OTHER#1&2#{device-guid}"));
+}
+
 TEST(NativeDisplay, PrivacyHasOneOriginAtClientMode) {
   DISPLAYCONFIG_PATH_INFO target {};
   target.sourceInfo.id = 17;
@@ -112,6 +121,32 @@ TEST(NativeDisplay, RejectsTruncatedOrInvalidSnapshot) {
   EXPECT_TRUE(native_display::win::valid(value));
   value.paths[0].sourceInfo.modeInfoIdx = 5;
   EXPECT_FALSE(native_display::win::valid(value));
+}
+
+TEST(NativeDisplay, CorruptRecoveryJournalDoesNotOccupyLegacyGate) {
+  auto path = std::filesystem::temp_directory_path() / ("sunshine-native-journal-test-" + std::to_string(GetCurrentProcessId()));
+  {
+    std::ofstream file(path, std::ios::binary);
+    file << "broken";
+  }
+  bool reported = false;
+  native_display::init(path, [&](const auto &) {
+    reported = true;
+  },
+                       [] {
+                       });
+  EXPECT_TRUE(reported);
+  EXPECT_TRUE(std::filesystem::exists(path));
+  HANDLE gate = CreateMutexW(nullptr, FALSE, L"Local\\SunshinePrivacyGuard");
+  ASSERT_NE(gate, nullptr);
+  const auto acquired = WaitForSingleObject(gate, 0);
+  EXPECT_TRUE(acquired == WAIT_OBJECT_0 || acquired == WAIT_ABANDONED);
+  if (acquired == WAIT_OBJECT_0 || acquired == WAIT_ABANDONED) {
+    ReleaseMutex(gate);
+  }
+  CloseHandle(gate);
+  native_display::shutdown();
+  std::filesystem::remove(path);
 }
 
 TEST(NativeDisplay, DoesNotNormalizeThePhysicalPrimary) {

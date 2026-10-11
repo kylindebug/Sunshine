@@ -3,11 +3,19 @@
  */
 #pragma once
 #include <algorithm>
+#include <cwctype>
 #include <stdexcept>
+#include <string>
 #include <vector>
 #include <windows.h>
 
 namespace native_display::win {
+  /** @brief Match the actual CCD monitor-device-path format, not a PnP instance-path prefix. */
+  inline bool is_mtt_target(std::wstring name) {
+    std::transform(name.begin(), name.end(), name.begin(), towupper);
+    return name.find(L"DISPLAY#MTT1337#") != std::wstring::npos;
+  }
+
   /** @brief A bounded, typed Windows display snapshot. */
   struct layout {
     std::vector<DISPLAYCONFIG_PATH_INFO> paths;  ///< Active or available paths.
