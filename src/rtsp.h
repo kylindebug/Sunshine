@@ -9,6 +9,7 @@
 
 // local includes
 #include "crypto.h"
+#include "setup_diagnostics.h"
 #include "thread_safe.h"
 
 namespace rtsp_stream {
@@ -20,6 +21,7 @@ namespace rtsp_stream {
   struct launch_session_t {
     uint32_t id;  ///< RTSP launch-session identifier assigned before stream startup.
     bool native_display_required {};  ///< Commit the prepared display lease before video starts.
+    std::atomic<setup_diagnostics::stage> setup_stage {setup_diagnostics::stage::waiting};  ///< Last observed handshake operation, without credentials.
 
     crypto::aes_t gcm_key;  ///< AES-GCM key negotiated for encrypted RTSP messages.
     crypto::aes_t iv;  ///< Initial RTSP AES-GCM IV supplied by the client.

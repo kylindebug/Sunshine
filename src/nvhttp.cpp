@@ -1345,6 +1345,8 @@ namespace nvhttp {
    * @param request HTTP request data from the client.
    */
   void launch(bool &host_audio, resp_https_t response, req_https_t request) {
+    const auto diagnostic_started = std::chrono::steady_clock::now();
+    std::uint32_t diagnostic_id {};
     std::lock_guard preparation_lock(launch_preparation_mutex);
     print_req<SunshineHTTPS>(request);
 
@@ -1361,6 +1363,11 @@ namespace nvhttp {
       pt::write_xml(data, tree);
       response->write(data.str());
       response->close_connection_after_response = true;
+
+      BOOST_LOG(info) << "[HS_HTTP_RESPONSE_QUEUED] operation=launch session=" << diagnostic_id
+                      << " status=" << tree.get<int>("root.<xmlattr>.status_code", 0)
+                      << " elapsed_ms=" << std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - diagnostic_started).count()
+                      << "; queued locally, client receipt not confirmed";
 
       if (revert_display_configuration) {
         if (native_prepared) {
@@ -1397,6 +1404,8 @@ namespace nvhttp {
 
     host_audio = util::from_view(get_arg(args, "localAudioPlayMode"));
     auto launch_session = make_launch_session(host_audio, args);
+    diagnostic_id = launch_session->id;
+    BOOST_LOG(info) << "[HS_REQUEST] operation=launch session=" << diagnostic_id << " mode=" << launch_session->width << 'x' << launch_session->height << '@' << launch_session->fps;
     launch_session->native_display_required = native_policy(static_cast<int>(appid)) != native_display::policy::disabled;
     if (launch_session->native_display_required && rtsp_stream::session_count() != 0) {
       tree.put("root.<xmlattr>.status_code", 409);
@@ -1492,6 +1501,8 @@ namespace nvhttp {
    * @param request HTTP request data from the client.
    */
   void resume(bool &host_audio, resp_https_t response, req_https_t request) {
+    const auto diagnostic_started = std::chrono::steady_clock::now();
+    std::uint32_t diagnostic_id {};
     std::lock_guard preparation_lock(launch_preparation_mutex);
     print_req<SunshineHTTPS>(request);
 
@@ -1512,6 +1523,10 @@ namespace nvhttp {
       pt::write_xml(data, tree);
       response->write(data.str());
       response->close_connection_after_response = true;
+      BOOST_LOG(info) << "[HS_HTTP_RESPONSE_QUEUED] operation=resume session=" << diagnostic_id
+                      << " status=" << tree.get<int>("root.<xmlattr>.status_code", 0)
+                      << " elapsed_ms=" << std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - diagnostic_started).count()
+                      << "; queued locally, client receipt not confirmed";
     });
 
     auto current_appid = proc::proc.running();
@@ -1543,6 +1558,8 @@ namespace nvhttp {
       host_audio = util::from_view(get_arg(args, "localAudioPlayMode"));
     }
     const auto launch_session = make_launch_session(host_audio, args);
+    diagnostic_id = launch_session->id;
+    BOOST_LOG(info) << "[HS_REQUEST] operation=resume session=" << diagnostic_id << " mode=" << launch_session->width << 'x' << launch_session->height << '@' << launch_session->fps;
     launch_session->native_display_required = native_policy(current_appid) != native_display::policy::disabled;
     if (launch_session->native_display_required && !no_active_sessions) {
       tree.put("root.<xmlattr>.status_code", 409);

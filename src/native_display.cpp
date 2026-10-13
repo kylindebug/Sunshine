@@ -503,8 +503,10 @@ namespace native_display {
             throw std::runtime_error("Virtual display did not become available within four seconds");
           }
           int stable = 0;
+          std::string observed = "not_observed";
           for (int attempt = 0; attempt < 30 && stable < 3; ++attempt) {
             auto current = read();
+            observed = win::mode_summary(current);
             stable = matches(current, target, width, height, fps) ? stable + 1 : 0;
             if (stable == 3) {
               DISPLAYCONFIG_SOURCE_DEVICE_NAME name {};
@@ -530,7 +532,7 @@ namespace native_display {
             }
             std::this_thread::sleep_for(100ms);
           }
-          throw std::runtime_error("Virtual display did not stabilize at the requested mode");
+          throw std::runtime_error("[ND_MODE_UNSTABLE] Requested " + std::to_string(width) + "x" + std::to_string(height) + "@" + std::to_string(fps) + "Hz; observed " + observed + ". Verify the exact resolution AND refresh rate in the virtual driver; physical capture remains blocked.");
         } catch (const std::exception &error) {
           std::string result = error.what();
           try {

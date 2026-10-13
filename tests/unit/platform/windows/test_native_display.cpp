@@ -3,6 +3,7 @@
  */
 #include "src/native_display.h"
 #include "src/native_display_state.h"
+#include "src/setup_diagnostics.h"
 #ifdef _WIN32
   #include "src/platform/windows/native_display_layout.h"
 
@@ -15,6 +16,21 @@ TEST(NativeDisplay, ExistingApplicationsRemainDisabled) {
   EXPECT_EQ(native_display::parse("physical"), native_display::policy::physical);
   EXPECT_EQ(native_display::parse("privacy"), native_display::policy::privacy);
   EXPECT_THROW(native_display::parse("privcy"), std::invalid_argument);
+}
+
+TEST(NativeDisplay, SetupTimeoutDistinguishesTransportFromNegotiation) {
+  using namespace setup_diagnostics;
+  EXPECT_STREQ(timeout_code(stage::waiting), "HS_NO_RTSP_CONNECTION");
+  EXPECT_STREQ(timeout_code(stage::tcp), "HS_RTSP_REQUEST_TIMEOUT");
+  for (const auto command : {"OPTIONS", "DESCRIBE", "SETUP", "ANNOUNCE", "PLAY"}) {
+    EXPECT_NE(command_stage(command), stage::other);
+    EXPECT_STREQ(timeout_code(command_stage(command)), "HS_RTSP_NEGOTIATION_TIMEOUT");
+  }
+  EXPECT_EQ(command_stage("secret=not-a-command\n"), stage::other);
+  EXPECT_STREQ(name(command_stage("secret=not-a-command\n")), "unknown_command_received");
+  EXPECT_STREQ(name(stage::waiting), "waiting_for_rtsp_tcp");
+  EXPECT_STREQ(name(stage::tcp), "tcp_accepted_no_parsed_request");
+  EXPECT_STREQ(name(stage::play), "PLAY_received");
 }
 
 TEST(NativeDisplay, IndirectCaptureUsesCurrentMonitorSourceNotRenderAdapter) {
@@ -136,6 +152,17 @@ TEST(NativeDisplay, PrivacyHasOneOriginAtClientMode) {
   EXPECT_EQ(value.modes[0].sourceMode.position.y, 0);
   EXPECT_EQ(value.modes[0].id, target.sourceInfo.id);
   EXPECT_EQ(value.modes[0].adapterId.LowPart, 42);
+}
+
+TEST(NativeDisplay, ModeFailureReportsActualRefreshWithoutRounding) {
+  using namespace native_display::win;
+  EXPECT_EQ(mode_summary({}), "invalid_snapshot");
+  auto value = virtual_layout({}, 1920, 1080, 30);
+  EXPECT_EQ(mode_summary(value), "1920x1080@30/1Hz");
+  value.paths.front().targetInfo.refreshRate = {60000, 1001};
+  EXPECT_EQ(mode_summary(value), "1920x1080@60000/1001Hz");
+  value.paths.push_back(value.paths.front());
+  EXPECT_EQ(mode_summary(value), "active_displays=2");
 }
 
 TEST(NativeDisplay, ExplicitRefreshUsesProgressiveScanline) {

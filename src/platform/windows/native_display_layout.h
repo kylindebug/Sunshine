@@ -102,4 +102,20 @@ namespace native_display::win {
     }
     return true;
   }
+
+  /** @brief Describe measured topology without exposing device identifiers.
+   * @param value Current CCD snapshot. @return Bounded mode description for errors.
+   */
+  inline std::string mode_summary(const layout &value) {
+    if (!valid(value)) {
+      return "invalid_snapshot";
+    }
+    if (value.paths.size() != 1) {
+      return "active_displays=" + std::to_string(value.paths.size());
+    }
+    const auto &path = value.paths.front();
+    const auto &mode = value.modes[path.sourceInfo.modeInfoIdx].sourceMode;
+    return std::to_string(mode.width) + "x" + std::to_string(mode.height) + "@" +
+           std::to_string(path.targetInfo.refreshRate.Numerator) + "/" + std::to_string(path.targetInfo.refreshRate.Denominator) + "Hz";
+  }
 }  // namespace native_display::win

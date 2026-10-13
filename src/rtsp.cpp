@@ -527,6 +527,9 @@ namespace rtsp_stream {
      * @param req Parsed RTSP request being handled.
      */
     void handle_msg(tcp::socket &sock, launch_session_t &session, msg_t &&req) {
+      const auto stage = setup_diagnostics::command_stage(req->message.request.command);
+      session.setup_stage.store(stage);
+      BOOST_LOG(info) << "[HS_RTSP_PROGRESS] session=" << session.id << " stage=" << setup_diagnostics::name(stage);
       auto func = _map_cmd_cb.find(req->message.request.command);
       if (func != std::end(_map_cmd_cb)) {
         func->second(this, sock, session, std::move(req));
@@ -556,6 +559,10 @@ namespace rtsp_stream {
 
       auto launch_session {launch_event.view(0s)};
       if (launch_session) {
+        auto expected = setup_diagnostics::stage::waiting;
+        if (launch_session->setup_stage.compare_exchange_strong(expected, setup_diagnostics::stage::tcp)) {
+          BOOST_LOG(info) << "[HS_RTSP_TCP_ACCEPTED] session=" << launch_session->id;
+        }
         // Associate the current RTSP session with this socket and start reading
         socket->session = launch_session;
         socket->read();
@@ -596,10 +603,12 @@ namespace rtsp_stream {
     void session_raise(std::shared_ptr<launch_session_t> launch_session) {
       // If a launch event is still pending, don't overwrite it.
       if (launch_event.view(0s)) {
+        BOOST_LOG(warning) << "[HS_PENDING_BUSY] session=" << launch_session->id << "; an earlier RTSP setup is still pending; retry after it expires";
         return;
       }
 
       // Raise the new launch session to prepare for the RTSP handshake
+      BOOST_LOG(info) << "[HS_WAITING_RTSP] session=" << launch_session->id << " port=" << net::map_port(RTSP_SETUP_PORT) << " timeout_ms=" << std::chrono::duration_cast<std::chrono::milliseconds>(config::stream.ping_timeout).count();
       launch_event.raise(std::move(launch_session));
 
       // Arm the timer to expire this launch session if the client times out
@@ -608,6 +617,10 @@ namespace rtsp_stream {
         if (!ec) {
           auto discarded = launch_event.pop(0s);
           if (discarded) {
+            const auto stage = discarded->setup_stage.load();
+            BOOST_LOG(warning) << '[' << setup_diagnostics::timeout_code(stage) << "] session=" << discarded->id << " last_stage=" << setup_diagnostics::name(stage)
+                               << "; setup expired after " << std::chrono::duration_cast<std::chrono::milliseconds>(config::stream.ping_timeout).count()
+                               << " ms; correlate client logs and Tailscale reachability. This alone does not prove a firewall block.";
             if (discarded->native_display_required) {
               native_display::cancel_setup(discarded->id);
             }
