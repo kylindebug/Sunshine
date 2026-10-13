@@ -1364,10 +1364,10 @@ namespace nvhttp {
       response->write(data.str());
       response->close_connection_after_response = true;
 
-      BOOST_LOG(info) << "[HS_HTTP_RESPONSE_QUEUED] operation=launch session=" << diagnostic_id
-                      << " status=" << tree.get<int>("root.<xmlattr>.status_code", 0)
+      BOOST_LOG(info) << "[HS_HTTP_RESPONSE_BUFFERED] operation=launch session=" << diagnostic_id
+                      << " gamestream_status=" << tree.get<int>("root.<xmlattr>.status_code", 0)
                       << " elapsed_ms=" << std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - diagnostic_started).count()
-                      << "; queued locally, client receipt not confirmed";
+                      << "; buffered locally, network send and client receipt not confirmed";
 
       if (revert_display_configuration) {
         if (native_prepared) {
@@ -1523,10 +1523,10 @@ namespace nvhttp {
       pt::write_xml(data, tree);
       response->write(data.str());
       response->close_connection_after_response = true;
-      BOOST_LOG(info) << "[HS_HTTP_RESPONSE_QUEUED] operation=resume session=" << diagnostic_id
-                      << " status=" << tree.get<int>("root.<xmlattr>.status_code", 0)
+      BOOST_LOG(info) << "[HS_HTTP_RESPONSE_BUFFERED] operation=resume session=" << diagnostic_id
+                      << " gamestream_status=" << tree.get<int>("root.<xmlattr>.status_code", 0)
                       << " elapsed_ms=" << std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - diagnostic_started).count()
-                      << "; queued locally, client receipt not confirmed";
+                      << "; buffered locally, network send and client receipt not confirmed";
     });
 
     auto current_appid = proc::proc.running();
