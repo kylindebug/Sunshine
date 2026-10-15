@@ -1322,7 +1322,9 @@ namespace platf::audio {
         assigned_sink = sink;
         return 0;
       }
-      auto source_device = default_device(device_enum);
+      // During a routed session, the virtual endpoint owns the user's logical
+      // controls. A temporary default may be a physical endpoint we muted ourselves.
+      auto source_device = original_roles && extract_virtual_sink_info(assigned_sink) ? get_sink_device(assigned_sink) : default_device(device_enum);
       auto source_volume = master_controls(source_device);
       float scalar {};
       bool muted {true};
