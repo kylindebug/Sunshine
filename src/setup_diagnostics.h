@@ -7,14 +7,14 @@
 namespace setup_diagnostics {
   /** @brief Last observed setup operation, not a claim of successful completion. */
   enum class stage {
-    waiting,
-    tcp,
-    options,
-    describe,
-    setup,
-    announce,
-    play,
-    other
+    waiting,  ///< No RTSP connection has been accepted.
+    tcp,  ///< TCP connected without a parsed RTSP method.
+    options,  ///< OPTIONS was received.
+    describe,  ///< DESCRIBE was received.
+    setup,  ///< SETUP was received.
+    announce,  ///< ANNOUNCE was received.
+    play,  ///< PLAY was received, without claiming control-channel completion.
+    other  ///< An unrecognized method was received; its text is not retained.
   };
 
   /** @brief Classify a command without retaining untrusted request text.

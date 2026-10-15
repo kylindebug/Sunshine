@@ -897,6 +897,22 @@ supported on the current platform.
     </tr>
 </table>
 
+### audio_follow_host_volume
+
+Windows opt-in policy. Default: `disabled`. Set `audio_follow_host_volume = enabled`
+to make outgoing audio follow the captured endpoint's master mute and volume.
+Windows post-volume loopback is preferred; unsupported endpoints use pre-volume
+loopback with decibel attenuation. Mute and unreadable master controls silence the
+entire outgoing packet. Windows already processed post-volume packets are not
+attenuated twice.
+
+When Sunshine changes audio endpoints, it transfers the current logical slider and
+mute before changing default devices. Disconnect transfers the final controls back
+and restores the original endpoint for each Windows audio role. A failed transition
+attempts rollback instead of selecting an arbitrary fallback device. Endpoint removal
+or process crashes require separate recovery; this policy does not modify Android's
+independent media volume or promise equal acoustic loudness on different speakers.
+
 ### install_steam_audio_drivers
 
 <table>

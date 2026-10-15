@@ -5,18 +5,21 @@
 #define INITGUID
 
 // standard includes
+#include <array>
 #include <format>
 #include <utility>
 
 // platform includes
 #include <Audioclient.h>
 #include <avrt.h>
+#include <endpointvolume.h>
 #include <mmdeviceapi.h>
 #include <newdev.h>
 #include <roapi.h>
 #include <synchapi.h>
 
 // local includes
+#include "audio_volume_policy.h"
 #include "src/config.h"
 #include "src/logging.h"
 #include "src/platform/common.h"
@@ -349,9 +352,10 @@ namespace platf::audio {
    *
    * @param device D3D, audio, or platform device used by the operation.
    * @param format Pixel, audio, or protocol format being converted.
+   * @param post_volume Receives whether Windows applies endpoint volume to loopback.
    * @return Constructed audio client object.
    */
-  audio_client_t make_audio_client(device_t &device, const format_t &format) {
+  audio_client_t make_audio_client(device_t &device, const format_t &format, bool &post_volume) {
     audio_client_t audio_client;
     auto status = device->Activate(
       IID_IAudioClient,
@@ -364,6 +368,19 @@ namespace platf::audio {
       BOOST_LOG(error) << "Couldn't activate Device: [0x"sv << util::hex(status).to_string_view() << ']';
 
       return nullptr;
+    }
+
+    post_volume = false;
+    if (config::audio.follow_host_volume) {
+      util::safe_ptr<IAudioClient2, Release<IAudioClient2>> client2;
+      if (SUCCEEDED(audio_client->QueryInterface(__uuidof(IAudioClient2), (void **) &client2))) {
+        AudioClientProperties properties {};
+        properties.cbSize = sizeof(properties);
+        properties.eCategory = AudioCategory_Other;
+        // Windows 11 24H2 flag; use its ABI value for older MinGW headers.
+        properties.Options = static_cast<AUDCLNT_STREAMOPTIONS>(0x8);
+        post_volume = SUCCEEDED(client2->SetClientProperties(&properties));
+      }
     }
 
     WAVEFORMATEXTENSIBLE capture_waveformat =
@@ -430,6 +447,51 @@ namespace platf::audio {
     }
 
     return device;
+  }
+
+  /** @brief Owned endpoint-volume interface. */
+  using endpoint_volume_t = util::safe_ptr<IAudioEndpointVolume, Release<IAudioEndpointVolume>>;
+
+  /**
+   * @brief Open master controls without changing the endpoint.
+   * @param device Endpoint whose controls are needed.
+   * @return Owned master controls, or an empty pointer on failure.
+   */
+  endpoint_volume_t master_controls(device_t &device) {
+    endpoint_volume_t volume;
+    if (device) {
+      device->Activate(__uuidof(IAudioEndpointVolume), CLSCTX_ALL, nullptr, (void **) &volume);
+    }
+    return volume;
+  }
+
+  /**
+   * @brief Read logical Windows slider and mute together.
+   * @param volume Endpoint master controls.
+   * @param scalar Receives the slider value.
+   * @param muted Receives the master mute state.
+   * @return True when both controls were read.
+   */
+  bool read_master(endpoint_volume_t &volume, float &scalar, bool &muted) {
+    BOOL value {TRUE};
+    if (!volume || FAILED(volume->GetMute(&value)) || FAILED(volume->GetMasterVolumeLevelScalar(&scalar))) {
+      return false;
+    }
+    muted = value;
+    return std::isfinite(scalar) && scalar >= 0.0f && scalar <= 1.0f;
+  }
+
+  /**
+   * @brief Silence an endpoint before transferring its logical volume state.
+   * @param volume Endpoint master controls.
+   * @param scalar Windows slider value to apply.
+   * @param muted Final master mute state.
+   * @return True only after the complete state was accepted.
+   */
+  bool write_master(endpoint_volume_t &volume, float scalar, bool muted) {
+    return volume && SUCCEEDED(volume->SetMute(TRUE, nullptr)) &&
+           SUCCEEDED(volume->SetMasterVolumeLevelScalar(scalar, nullptr)) &&
+           SUCCEEDED(volume->SetMute(muted, nullptr));
   }
 
   /**
@@ -590,6 +652,17 @@ namespace platf::audio {
       std::move(&sample_buf[sample_size], sample_buf_pos, std::begin(sample_buf));
       sample_buf_pos -= sample_size;
 
+      if (config::audio.follow_host_volume) {
+        volume_policy::state_t state;
+        BOOL muted {TRUE};
+        if (endpoint_volume && SUCCEEDED(endpoint_volume->GetMute(&muted)) && SUCCEEDED(endpoint_volume->GetMasterVolumeLevel(&state.db))) {
+          state.valid = true;
+          state.muted = muted;
+        }
+        // Recheck at packet delivery, so pre-mute buffered audio cannot escape.
+        volume_policy::apply(sample_out, state, post_volume);
+      }
+
       return capture_e::ok;
     }
 
@@ -640,6 +713,10 @@ namespace platf::audio {
         return -1;
       }
 
+      if (config::audio.follow_host_volume && FAILED(device->Activate(__uuidof(IAudioEndpointVolume), CLSCTX_ALL, nullptr, (void **) &endpoint_volume))) {
+        BOOST_LOG(error) << "[AU_VOLUME_UNAVAILABLE] Master volume is unreadable; outgoing audio remains silent";
+      }
+
       for (const auto &format : formats) {
         if (format.channel_count != channels_out) {
           BOOST_LOG(debug) << "Skipping audio format ["sv << format.name << "] with channel count ["sv
@@ -648,7 +725,7 @@ namespace platf::audio {
         }
 
         BOOST_LOG(debug) << "Trying audio format ["sv << format.name << ']';
-        audio_client = make_audio_client(device, format);
+        audio_client = make_audio_client(device, format, post_volume);
 
         if (audio_client) {
           BOOST_LOG(debug) << "Found audio format ["sv << format.name << ']';
@@ -660,6 +737,10 @@ namespace platf::audio {
       if (!audio_client) {
         BOOST_LOG(error) << "Couldn't find supported format for audio"sv;
         return -1;
+      }
+
+      if (config::audio.follow_host_volume) {
+        BOOST_LOG(info) << "[AU_FOLLOW_HOST_VOLUME] capture=" << (post_volume ? "post_volume" : "pre_volume_with_db_gain") << "; mute checked before packet delivery";
       }
 
       REFERENCE_TIME default_latency;
@@ -843,6 +924,8 @@ namespace platf::audio {
     device_t device;  ///< WASAPI endpoint device selected for capture.
     audio_client_t audio_client;  ///< WASAPI audio client configured for shared-mode capture.
     audio_capture_t audio_capture;  ///< WASAPI capture client used to read sample packets.
+    util::safe_ptr<IAudioEndpointVolume, Release<IAudioEndpointVolume>> endpoint_volume;  ///< Master controls for the captured endpoint.
+    bool post_volume {};  ///< Windows already applied master attenuation to the captured PCM.
 
     audio_notification_t endpt_notification;  ///< Endpoint notification callback registered with Windows.
     std::optional<std::function<void()>> default_endpt_changed_cb;  ///< Callback invoked when the default endpoint changes.
@@ -1103,6 +1186,10 @@ namespace platf::audio {
         return -1;
       }
 
+      if (config::audio.follow_host_volume) {
+        return set_sink_following_volume(sink, *device_id);
+      }
+
       int failure {};
       for (int x = 0; x < (int) ERole_enum_count; ++x) {
         auto status = policy->SetDefaultEndpoint(device_id->c_str(), (ERole) x);
@@ -1125,6 +1212,100 @@ namespace platf::audio {
       }
 
       return failure;
+    }
+
+    /**
+     * @brief Switch or restore audio roles after transferring the current logical master controls.
+     * @param sink Requested sink descriptor retained for capture.
+     * @param device_id Resolved requested endpoint ID.
+     * @return Zero on success; nonzero if controls or routing failed.
+     */
+    int set_sink_following_volume(const std::string &sink, const std::wstring &device_id) {
+      std::array<std::wstring, ERole_enum_count> previous_roles;
+      for (int role = 0; role < (int) ERole_enum_count; ++role) {
+        device_t endpoint;
+        wstring_t id;
+        if (FAILED(device_enum->GetDefaultAudioEndpoint(eRender, (ERole) role, &endpoint)) || FAILED(endpoint->GetId(&id))) {
+          BOOST_LOG(error) << "[AU_ROUTE_SNAPSHOT_FAILED] Audio roles unchanged";
+          return -1;
+        }
+        previous_roles[role] = id.get();
+      }
+
+      const bool restoring = original_roles && (*original_roles)[eConsole] == device_id;
+      auto targets = restoring ? *original_roles : std::array<std::wstring, ERole_enum_count> {device_id, device_id, device_id};
+      if (targets == previous_roles) {
+        if (restoring) {
+          original_roles.reset();
+        }
+        assigned_sink = sink;
+        return 0;
+      }
+      auto source_device = default_device(device_enum);
+      auto source_volume = master_controls(source_device);
+      float scalar {};
+      bool muted {true};
+      if (!read_master(source_volume, scalar, muted)) {
+        BOOST_LOG(error) << "[AU_VOLUME_UNAVAILABLE] Audio route unchanged because source master controls are unreadable";
+        return -1;
+      }
+
+      /** @brief Destination controls retained until an audio route commits. */
+      struct change_t {
+        endpoint_volume_t volume;  ///< Modified endpoint controls.
+        float scalar {};  ///< Previous endpoint slider.
+        bool muted {true};  ///< Previous endpoint mute.
+      };
+
+      std::vector<change_t> changes;
+      auto rollback = util::fail_guard([&] {
+        for (int role = 0; role < (int) ERole_enum_count; ++role) {
+          policy->SetDefaultEndpoint(previous_roles[role].c_str(), (ERole) role);
+        }
+        for (auto &change : changes) {
+          if (!write_master(change.volume, change.scalar, change.muted)) {
+            BOOST_LOG(error) << "[AU_ROUTE_ROLLBACK_FAILED] Endpoint remains in its last safe state";
+          }
+        }
+      });
+
+      for (int role = 0; role < (int) ERole_enum_count; ++role) {
+        // Prepare each unique destination before it can receive system sounds.
+        if (std::find(targets.begin(), targets.begin() + role, targets[role]) != targets.begin() + role) {
+          continue;
+        }
+        device_t endpoint;
+        if (FAILED(device_enum->GetDevice(targets[role].c_str(), &endpoint))) {
+          BOOST_LOG(error) << "[AU_ROUTE_TARGET_UNAVAILABLE] Refusing an unverified audio fallback";
+          return -1;
+        }
+        change_t change;
+        change.volume = master_controls(endpoint);
+        if (!read_master(change.volume, change.scalar, change.muted)) {
+          return -1;
+        }
+        changes.push_back(std::move(change));
+        if (!write_master(changes.back().volume, scalar, muted)) {
+          BOOST_LOG(error) << "[AU_VOLUME_TRANSFER_FAILED] Audio route will be rolled back";
+          return -1;
+        }
+      }
+
+      for (int role = 0; role < (int) ERole_enum_count; ++role) {
+        if (FAILED(policy->SetDefaultEndpoint(targets[role].c_str(), (ERole) role))) {
+          BOOST_LOG(error) << "[AU_ROUTE_FAILED] Audio roles and controls will be rolled back";
+          return -1;
+        }
+      }
+      rollback.disable();
+      if (restoring) {
+        original_roles.reset();
+      } else if (!original_roles) {
+        original_roles = previous_roles;
+      }
+      assigned_sink = sink;
+      BOOST_LOG(info) << "[AU_VOLUME_TRANSFERRED] action=" << (restoring ? "restore" : "route") << " mute=" << muted << " slider=" << scalar;
+      return 0;
     }
 
     /**
@@ -1424,6 +1605,7 @@ namespace platf::audio {
     policy_t policy;  ///< Windows policy configuration interface used to switch default audio devices.
     audio::device_enum_t device_enum;  ///< Device enumerator used to query and watch audio endpoints.
     std::string assigned_sink;  ///< Sink assigned while Sunshine captures host audio, captured directly by the microphone.
+    std::optional<std::array<std::wstring, ERole_enum_count>> original_roles;  ///< Original default endpoints for all roles during a routed session.
   };
 
 #ifdef SUNSHINE_TESTS

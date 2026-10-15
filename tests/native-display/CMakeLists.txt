@@ -6,7 +6,8 @@ get_filename_component(SOURCE_ROOT "../.." ABSOLUTE)
 add_subdirectory("${SOURCE_ROOT}/third-party/lizardbyte-common/third-party/googletest" googletest)
 add_executable(test_native_display
     "${SOURCE_ROOT}/src/native_display.cpp"
-    "${SOURCE_ROOT}/tests/unit/platform/windows/test_native_display.cpp")
+    "${SOURCE_ROOT}/tests/unit/platform/windows/test_native_display.cpp"
+    "${SOURCE_ROOT}/tests/unit/platform/windows/test_audio_volume.cpp")
 target_include_directories(test_native_display PRIVATE "${SOURCE_ROOT}")
 target_compile_options(test_native_display PRIVATE -Wall -Wextra -Werror)
 target_link_libraries(test_native_display PRIVATE gtest_main user32 setupapi cfgmgr32 wtsapi32 uuid advapi32)
