@@ -812,7 +812,7 @@ namespace platf::audio {
       if (config::audio.follow_host_volume) {
         BOOST_LOG(info) << "[AU_FOLLOW_HOST_VOLUME] capture=" << (post_volume ? "post_volume" : "ordinary_loopback") << "; mute and zero volume checked before packet delivery";
         if (!post_volume) {
-          BOOST_LOG(warning) << "[AU_POST_VOLUME_UNSUPPORTED] Using ordinary loopback without duplicate gain; hardware-only master attenuation depends on the endpoint driver";
+          BOOST_LOG(error) << "[AU_POST_VOLUME_UNSUPPORTED] Remote audio remains silent because this endpoint cannot guarantee capture follows master volume; select a post-volume capable endpoint";
         }
       }
 

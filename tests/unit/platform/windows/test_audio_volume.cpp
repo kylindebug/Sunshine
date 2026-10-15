@@ -47,17 +47,17 @@ TEST(AudioVolume, PostVolumePacketsAreNotAttenuatedTwice) {
   EXPECT_EQ(samples, (std::array<float, 2> {0.5f, -0.5f}));
 }
 
-TEST(AudioVolume, OrdinaryLoopbackMustNotApplyMasterAttenuationTwice) {
+TEST(AudioVolume, UnverifiedOrdinaryLoopbackRemainsSilent) {
   std::array<float, 2> samples {0.5f, -0.5f};
   apply(samples, {true, false, -20.0f}, false);
-  EXPECT_EQ(samples, (std::array<float, 2> {0.5f, -0.5f}));
-  EXPECT_EQ(gain({true, false, 6.0f}, false), 1.0f);
+  EXPECT_EQ(samples, (std::array<float, 2> {}));
+  EXPECT_EQ(gain({true, false, 6.0f}, false), 0.0f);
 }
 
 TEST(AudioVolume, UnmuteAppliesTheLatestLevel) {
   EXPECT_EQ(gain({true, true, -6.0f}, false), 0.0f);
-  EXPECT_EQ(gain({true, false, -6.0f}, false), 1.0f);
-  EXPECT_EQ(gain({true, false, 0.0f}, false), 1.0f);
+  EXPECT_EQ(gain({true, false, -6.0f}, true), 1.0f);
+  EXPECT_EQ(gain({true, false, 0.0f}, true), 1.0f);
 }
 
 TEST(AudioVolume, QueuedFramesObserveMuteAtEncodingRatherThanCapture) {

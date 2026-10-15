@@ -50,7 +50,7 @@ namespace platf::audio::volume_policy {
     // Ordinary loopback can already include software master attenuation. A missing
     // post-volume option is not evidence that captured samples are pre-volume.
     (void) post_volume;
-    return 1.0f;
+    return post_volume ? 1.0f : 0.0f;
   }
 
   /**
