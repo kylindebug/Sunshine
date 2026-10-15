@@ -19,12 +19,30 @@ set(WIX_BUILD_DIRECTORY "${CPACK_PACKAGE_DIRECTORY}/_CPack_Packages/win64/WIX")
 set(WIX_TOOL_PATH "${CMAKE_BINARY_DIR}/.wix")
 file(MAKE_DIRECTORY ${WIX_TOOL_PATH})
 
-# Install WiX locally using dotnet
-execute_process(
+# Reconfiguration must reuse the exact tool already installed in this build directory.
+# Recent dotnet versions can fail a repeated install even though the tool exists.
+set(WIX_LOCAL_VERSION "")
+set(WIX_LOCAL_VERSION_RESULT 1)
+string(REPLACE "." "\\." WIX_VERSION_PATTERN "${WIX_VERSION}")
+if(EXISTS "${WIX_TOOL_PATH}/wix.exe")
+    execute_process(
+            COMMAND "${WIX_TOOL_PATH}/wix.exe" --version
+            OUTPUT_VARIABLE WIX_LOCAL_VERSION
+            OUTPUT_STRIP_TRAILING_WHITESPACE
+            RESULT_VARIABLE WIX_LOCAL_VERSION_RESULT
+            ERROR_QUIET
+    )
+endif()
+if(WIX_LOCAL_VERSION_RESULT EQUAL 0 AND WIX_LOCAL_VERSION MATCHES "^${WIX_VERSION_PATTERN}(\\+|$)")
+    message(STATUS "Reusing local WiX ${WIX_LOCAL_VERSION}")
+    set(WIX_INSTALL_RESULT 0)
+else()
+    execute_process(
         COMMAND ${DOTNET_EXECUTABLE} tool install --tool-path ${WIX_TOOL_PATH} wix --version ${WIX_VERSION}
         ERROR_VARIABLE WIX_INSTALL_OUTPUT
         RESULT_VARIABLE WIX_INSTALL_RESULT
-)
+    )
+endif()
 
 if(NOT WIX_INSTALL_RESULT EQUAL 0)
     message(FATAL_ERROR "Failed to install WiX tools locally.
