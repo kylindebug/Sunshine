@@ -75,6 +75,17 @@ const config = ref(props.config)
               default="true"
     ></Checkbox>
 
+    <PlatformLayout :platform="platform">
+      <template #windows>
+        <Checkbox class="mb-3"
+                  id="audio_follow_host_volume"
+                  locale-prefix="config"
+                  v-model="config.audio_follow_host_volume"
+                  default="false"
+        ></Checkbox>
+      </template>
+    </PlatformLayout>
+
     <AdapterNameSelector
         :platform="platform"
         :config="config"

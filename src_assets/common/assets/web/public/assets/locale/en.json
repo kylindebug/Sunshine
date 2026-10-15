@@ -155,6 +155,8 @@
     "amd_vbaq": "AMF Variance Based Adaptive Quantization (VBAQ)",
     "amd_vbaq_desc": "The human visual system is typically less sensitive to artifacts in highly textured areas. In VBAQ mode, pixel variance is used to indicate the complexity of spatial textures, allowing the encoder to allocate more bits to smoother areas. Enabling this feature leads to improvements in subjective visual quality with some content.",
     "apply_note": "Click 'Apply' to restart Sunshine and apply changes. This will terminate any running sessions.",
+    "audio_follow_host_volume": "Follow Host Volume and Mute",
+    "audio_follow_host_volume_desc": "Make streamed audio follow Windows master volume and mute, and transfer these settings when switching audio devices. Requires a post-volume capable endpoint; unsupported devices remain silent and report the reason in the host log. Android media volume remains independent.",
     "audio_sink": "Audio Sink",
     "audio_sink_desc_linux": "The name of the audio sink used for Audio Loopback. If you do not specify this variable, pulseaudio will select the default monitor device. You can find the name of the audio sink using either command:",
     "audio_sink_desc_macos": "The name of the audio sink used for Audio Loopback. Leave this blank to use the built-in system audio capture. Alternatively, specify a virtual device such as Soundflower or BlackHole if you prefer.",
