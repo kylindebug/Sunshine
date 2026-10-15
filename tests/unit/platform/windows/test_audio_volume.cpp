@@ -12,6 +12,13 @@
 
 using namespace platf::audio::volume_policy;
 
+TEST(AudioVolume, AlreadyRestoredRolesStillRequireFinalLogicalVolumeTransfer) {
+  EXPECT_FALSE(skip_transition(true, true));
+  EXPECT_FALSE(skip_transition(true, false));
+  EXPECT_FALSE(skip_transition(false, false));
+  EXPECT_TRUE(skip_transition(false, true));
+}
+
 TEST(AudioVolume, MuteClearsPreviouslyBufferedNonzeroAudio) {
   for (bool post : {false, true}) {
     std::array<float, 4> samples {0.6f, -0.5f, 1.0f, -1.0f};

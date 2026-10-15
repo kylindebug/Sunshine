@@ -1315,10 +1315,7 @@ namespace platf::audio {
 
       const bool restoring = original_roles && (*original_roles)[eConsole] == device_id;
       auto targets = restoring ? *original_roles : std::array<std::wstring, ERole_enum_count> {device_id, device_id, device_id};
-      if (targets == previous_roles) {
-        if (restoring) {
-          original_roles.reset();
-        }
+      if (volume_policy::skip_transition(restoring, targets == previous_roles)) {
         assigned_sink = sink;
         return 0;
       }
@@ -1409,6 +1406,9 @@ namespace platf::audio {
       }
 
       for (int role = 0; role < (int) ERole_enum_count; ++role) {
+        if (targets[role] == previous_roles[role]) {
+          continue;
+        }
         if (FAILED(policy->SetDefaultEndpoint(targets[role].c_str(), (ERole) role))) {
           BOOST_LOG(error) << "[AU_ROUTE_FAILED] Audio roles and controls will be rolled back";
           return -1;

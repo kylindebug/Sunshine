@@ -9,6 +9,16 @@
 #include <span>
 
 namespace platf::audio::volume_policy {
+  /**
+   * @brief Skip an unchanged route only when no final logical controls need restoring.
+   * @param restoring Whether a routed session is returning to the host endpoints.
+   * @param roles_match Whether all current roles already match the requested route.
+   * @return True only for an unchanged non-restoration route.
+   */
+  inline bool skip_transition(bool restoring, bool roles_match) {
+    return roles_match && !restoring;
+  }
+
   /** @brief Observed endpoint controls; unreadable controls remain silent. */
   struct state_t {
     bool valid {};  ///< Both mute and master level were read successfully.
