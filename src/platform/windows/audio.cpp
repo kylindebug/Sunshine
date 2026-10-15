@@ -672,8 +672,8 @@ namespace platf::audio {
       if (!config::audio.follow_host_volume) {
         return mic_t::silence_check();
       }
-      return [state = mute_notification.muted] {
-        return state->load();
+      return [state = mute_notification.muted, failed = volume_read_failed, registered = mute_notification_registered] {
+        return volume_policy::encoder_silence(state->load(), failed->load(), registered);
       };
     }
 
@@ -713,9 +713,9 @@ namespace platf::audio {
           state.valid = true;
           state.muted = volume_policy::silence_required(true, muted, slider);
         }
-        if (!state.valid) {
-          mute_notification.muted->store(true);
-        }
+        // Polling health is independent of notifications: a successful retry must
+        // recover without overwriting a newer mute notification.
+        volume_read_failed->store(!state.valid);
         // Apply observed controls here; the encoder separately gates queued PCM.
         volume_policy::apply(sample_out, state, post_volume);
       }
@@ -1003,6 +1003,7 @@ namespace platf::audio {
     util::safe_ptr<IAudioEndpointVolume, Release<IAudioEndpointVolume>> endpoint_volume;  ///< Master controls for the captured endpoint.
     bool post_volume {};  ///< Windows already applied master attenuation to the captured PCM.
     mute_notification_t mute_notification;  ///< Shared mute observer for queued audio.
+    std::shared_ptr<std::atomic_bool> volume_read_failed {std::make_shared<std::atomic_bool>(true)};  ///< Recoverable polling failure shared with the encoder.
     bool mute_notification_registered {};  ///< Callback registration owned by this microphone.
 
     audio_notification_t endpt_notification;  ///< Endpoint notification callback registered with Windows.
@@ -1267,6 +1268,11 @@ namespace platf::audio {
      * @return Status from updating sink.
      */
     int set_sink(const std::string &sink) override {
+      // The original console endpoint may have been unplugged, so recognize its
+      // snapshot ID before set_format() requires an active endpoint match.
+      if (config::audio.follow_host_volume && original_roles && utf_utils::from_utf8(sink) == (*original_roles)[eConsole]) {
+        return restore_original_roles();
+      }
       auto device_id = set_format(sink);
       if (!device_id) {
         return -1;
@@ -1301,6 +1307,66 @@ namespace platf::audio {
     }
 
     /**
+     * @brief Restore each available original endpoint without undoing other successful restores.
+     * @return Zero when every original role and its final controls were restored.
+     */
+    int restore_original_roles() {
+      if (!original_roles) {
+        return 0;
+      }
+      if (!restore_controls) {
+        auto source = extract_virtual_sink_info(assigned_sink) ? get_sink_device(assigned_sink) : default_device(device_enum);
+        auto volume = master_controls(source);
+        float scalar {};
+        bool muted {true};
+        if (!read_master(volume, scalar, muted)) {
+          BOOST_LOG(error) << "[AU_RESTORE_CONTROLS_UNAVAILABLE] Original audio roles remain pending";
+          return -1;
+        }
+        // Retain the final logical controls across partial restores and retries.
+        restore_controls = std::make_pair(scalar, muted);
+      }
+      const bool complete = volume_policy::restore_independently((int) ERole_enum_count, [&](int first) {
+        const auto &id = (*original_roles)[first];
+        if (std::find(original_roles->begin(), original_roles->begin() + first, id) != original_roles->begin() + first) {
+          return true;
+        }
+        device_t endpoint;
+        DWORD state {};
+        if (FAILED(device_enum->GetDevice(id.c_str(), &endpoint)) || FAILED(endpoint->GetState(&state)) || state != DEVICE_STATE_ACTIVE) {
+          BOOST_LOG(warning) << "[AU_RESTORE_ENDPOINT_UNAVAILABLE] original_role=" << first << "; no substitute endpoint selected";
+          return false;
+        }
+        auto volume = master_controls(endpoint);
+        if (!write_master(volume, restore_controls->first, true)) {
+          BOOST_LOG(error) << "[AU_RESTORE_CONTROLS_FAILED] original_role=" << first << "; routing unchanged for this endpoint";
+          return false;
+        }
+        bool endpoint_restored = true;
+        for (int role = first; role < (int) ERole_enum_count; ++role) {
+          if ((*original_roles)[role] == id && FAILED(policy->SetDefaultEndpoint(id.c_str(), (ERole) role))) {
+            BOOST_LOG(error) << "[AU_RESTORE_ROLE_FAILED] role=" << role << "; endpoint remains muted";
+            endpoint_restored = false;
+          }
+        }
+        if (endpoint_restored && !write_master(volume, restore_controls->first, restore_controls->second)) {
+          BOOST_LOG(error) << "[AU_RESTORE_CONTROLS_FAILED] original_role=" << first << "; endpoint remains in its last safe state";
+          endpoint_restored = false;
+        }
+        return endpoint_restored;
+      });
+      if (complete) {
+        assigned_sink = utf_utils::to_utf8((*original_roles)[eConsole]);
+        original_roles.reset();
+        restore_controls.reset();
+        BOOST_LOG(info) << "[AU_RESTORE_COMPLETE] Original audio roles and logical master controls restored";
+      } else {
+        BOOST_LOG(warning) << "[AU_RESTORE_PENDING] Available endpoints restored independently; remaining roles require retry";
+      }
+      return complete ? 0 : -1;
+    }
+
+    /**
      * @brief Switch or restore audio roles after transferring the current logical master controls.
      * @param sink Requested sink descriptor retained for capture.
      * @param device_id Resolved requested endpoint ID.
@@ -1319,8 +1385,11 @@ namespace platf::audio {
       }
 
       const bool restoring = original_roles && (*original_roles)[eConsole] == device_id;
-      auto targets = restoring ? *original_roles : std::array<std::wstring, ERole_enum_count> {device_id, device_id, device_id};
-      if (volume_policy::skip_transition(restoring, targets == previous_roles)) {
+      if (restoring) {
+        return restore_original_roles();
+      }
+      auto targets = std::array<std::wstring, ERole_enum_count> {device_id, device_id, device_id};
+      if (targets == previous_roles) {
         assigned_sink = sink;
         return 0;
       }
@@ -1387,7 +1456,7 @@ namespace platf::audio {
 
       // A Windows sound session may stay pinned to an old physical endpoint.
       // Routing alone cannot silence those sounds when host playback is disabled.
-      if (!restoring && extract_virtual_sink_info(sink) && !host_playback_enabled) {
+      if (extract_virtual_sink_info(sink) && !host_playback_enabled) {
         const auto &host_roles = original_roles ? *original_roles : previous_roles;
         for (int role = 0; role < (int) ERole_enum_count; ++role) {
           if (host_roles[role] == device_id || std::find(host_roles.begin(), host_roles.begin() + role, host_roles[role]) != host_roles.begin() + role) {
@@ -1420,13 +1489,11 @@ namespace platf::audio {
         }
       }
       rollback.disable();
-      if (restoring) {
-        original_roles.reset();
-      } else if (!original_roles) {
+      if (!original_roles) {
         original_roles = previous_roles;
       }
       assigned_sink = sink;
-      BOOST_LOG(info) << "[AU_VOLUME_TRANSFERRED] action=" << (restoring ? "restore" : "route") << " mute=" << muted << " slider=" << scalar;
+      BOOST_LOG(info) << "[AU_VOLUME_TRANSFERRED] action=route mute=" << muted << " slider=" << scalar;
       return 0;
     }
 
@@ -1722,12 +1789,22 @@ namespace platf::audio {
      * @brief Destroy the Windows audio control.
      */
     ~audio_control_t() override {
+      if (original_roles) {
+        try {
+          if (restore_original_roles()) {
+            BOOST_LOG(error) << "[AU_RESTORE_INCOMPLETE] Audio controller exiting with unavailable or failed original roles";
+          }
+        } catch (...) {
+          BOOST_LOG(error) << "[AU_RESTORE_INCOMPLETE] Exception during final original audio role recovery";
+        }
+      }
     }
 
     policy_t policy;  ///< Windows policy configuration interface used to switch default audio devices.
     audio::device_enum_t device_enum;  ///< Device enumerator used to query and watch audio endpoints.
     std::string assigned_sink;  ///< Sink assigned while Sunshine captures host audio, captured directly by the microphone.
     std::optional<std::array<std::wstring, ERole_enum_count>> original_roles;  ///< Original default endpoints for all roles during a routed session.
+    std::optional<std::pair<float, bool>> restore_controls;  ///< Final logical slider and mute retained while original-role recovery is incomplete.
     bool host_playback_enabled {true};  ///< Client preference, available before the first default-device switch.
   };
 

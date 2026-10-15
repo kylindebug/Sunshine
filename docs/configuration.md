@@ -915,6 +915,10 @@ and restores the original endpoint for each Windows audio role.
 When routing to virtual speakers with client host playback disabled, the original
 role endpoints are muted as well, covering system sounds pinned to those devices.
 Their final master controls follow the virtual endpoint on normal disconnect.
+If an original endpoint was unplugged, available original endpoints restore
+independently and the unavailable roles produce `AU_RESTORE_ENDPOINT_UNAVAILABLE`.
+The controller retries pending restoration on destruction, retaining final logical
+controls during partial retries; this is not persistent recovery after process exit.
 The change never relies on routing alone to silence physical playback. A failed transition
 attempts rollback instead of selecting an arbitrary fallback device. Endpoint removal
 or process crashes require separate recovery; this policy does not modify Android's

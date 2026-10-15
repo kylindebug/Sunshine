@@ -12,6 +12,13 @@
 
 using namespace platf::audio::volume_policy;
 
+TEST(AudioVolume, TransientReadFailureRecoversWithoutOverwritingMuteNotifications) {
+  EXPECT_TRUE(encoder_silence(false, true, true));
+  EXPECT_FALSE(encoder_silence(false, false, true));
+  EXPECT_TRUE(encoder_silence(true, false, true));
+  EXPECT_TRUE(encoder_silence(false, false, false));
+}
+
 TEST(AudioVolume, ZeroSliderMustSilenceEvenWithoutMasterMute) {
   EXPECT_TRUE(silence_required(true, false, 0.0f));
   EXPECT_TRUE(silence_required(true, true, 0.5f));
@@ -102,4 +109,30 @@ TEST(AudioVolume, SuccessfulRoleRollbackAllowsPreviousControls) {
                        }));
   EXPECT_EQ(restored_roles, 3);
   EXPECT_TRUE(controls_restored);
+}
+
+TEST(AudioVolume, UnavailableOriginalEndpointDoesNotBlockOtherRestores) {
+  for (int missing = 0; missing < 3; ++missing) {
+    std::array<int, 3> destinations {9, 9, 9};
+    std::array<float, 3> levels {};
+    std::array<bool, 3> muted {true, true, true};
+    int attempts {};
+    const bool complete = restore_independently(3, [&](int role) {
+      ++attempts;
+      if (role == missing) {
+        return false;
+      }
+      destinations[role] = role;
+      levels[role] = 0.35f;
+      muted[role] = false;
+      return true;
+    });
+    EXPECT_FALSE(complete);
+    EXPECT_EQ(attempts, 3);
+    for (int role = 0; role < 3; ++role) {
+      EXPECT_EQ(destinations[role], role == missing ? 9 : role);
+      EXPECT_FLOAT_EQ(levels[role], role == missing ? 0.0f : 0.35f);
+      EXPECT_EQ(muted[role], role == missing);
+    }
+  }
 }

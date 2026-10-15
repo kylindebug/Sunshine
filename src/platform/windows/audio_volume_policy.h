@@ -10,6 +10,33 @@
 
 namespace platf::audio::volume_policy {
   /**
+   * @brief Attempt every original role even when an earlier endpoint is unavailable.
+   * @param count Number of original roles.
+   * @param recover Callback that restores a role or skips an already handled endpoint.
+   * @return True only when every callback succeeded.
+   */
+  template<class Recover>
+  bool restore_independently(int count, Recover recover) {
+    bool complete = true;
+    for (int role = 0; role < count; ++role) {
+      const bool restored = recover(role);
+      complete = restored && complete;
+    }
+    return complete;
+  }
+
+  /**
+   * @brief Combine independent notification and polling health without latching a transient failure.
+   * @param notified_silence Latest endpoint mute or zero-volume notification.
+   * @param read_failed Whether the latest master-control read failed.
+   * @param registered Whether change notifications were registered successfully.
+   * @return True when the encoder must send silence.
+   */
+  inline bool encoder_silence(bool notified_silence, bool read_failed, bool registered) {
+    return notified_silence || read_failed || !registered;
+  }
+
+  /**
    * @brief Treat a zero master slider as silence even when Windows mute is false.
    * @param known Whether both master controls were read.
    * @param muted Windows master-mute state.
@@ -41,7 +68,7 @@ namespace platf::audio::volume_policy {
    * @brief Gate mute without applying master attenuation a second time.
    * @param state Observed master controls.
    * @param post_volume Whether Windows guarantees a post-volume loopback tap.
-   * @return Linear gain, or zero for mute and unreadable controls.
+   * @return Unity gain, or zero for mute, unreadable controls or an unverified tap.
    */
   inline float gain(const state_t &state, bool post_volume) {
     if (!state.valid || state.muted || !std::isfinite(state.db)) {
@@ -49,7 +76,6 @@ namespace platf::audio::volume_policy {
     }
     // Ordinary loopback can already include software master attenuation. A missing
     // post-volume option is not evidence that captured samples are pre-volume.
-    (void) post_volume;
     return post_volume ? 1.0f : 0.0f;
   }
 
