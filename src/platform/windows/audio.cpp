@@ -810,7 +810,10 @@ namespace platf::audio {
       }
 
       if (config::audio.follow_host_volume) {
-        BOOST_LOG(info) << "[AU_FOLLOW_HOST_VOLUME] capture=" << (post_volume ? "post_volume" : "pre_volume_with_db_gain") << "; mute checked before packet delivery";
+        BOOST_LOG(info) << "[AU_FOLLOW_HOST_VOLUME] capture=" << (post_volume ? "post_volume" : "ordinary_loopback") << "; mute and zero volume checked before packet delivery";
+        if (!post_volume) {
+          BOOST_LOG(warning) << "[AU_POST_VOLUME_UNSUPPORTED] Using ordinary loopback without duplicate gain; hardware-only master attenuation depends on the endpoint driver";
+        }
       }
 
       REFERENCE_TIME default_latency;

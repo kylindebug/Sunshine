@@ -38,16 +38,19 @@ namespace platf::audio::volume_policy {
   };
 
   /**
-   * @brief Calculate software attenuation only for pre-volume loopback.
+   * @brief Gate mute without applying master attenuation a second time.
    * @param state Observed master controls.
-   * @param post_volume Whether Windows already applied master volume.
+   * @param post_volume Whether Windows guarantees a post-volume loopback tap.
    * @return Linear gain, or zero for mute and unreadable controls.
    */
   inline float gain(const state_t &state, bool post_volume) {
     if (!state.valid || state.muted || !std::isfinite(state.db)) {
       return 0.0f;
     }
-    return post_volume ? 1.0f : std::pow(10.0f, std::min(state.db, 0.0f) / 20.0f);
+    // Ordinary loopback can already include software master attenuation. A missing
+    // post-volume option is not evidence that captured samples are pre-volume.
+    (void) post_volume;
+    return 1.0f;
   }
 
   /**

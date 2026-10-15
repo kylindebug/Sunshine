@@ -901,10 +901,12 @@ supported on the current platform.
 
 Windows opt-in policy. Default: `disabled`. Set `audio_follow_host_volume = enabled`
 to make outgoing audio follow the captured endpoint's master mute and volume.
-Windows post-volume loopback is preferred; unsupported endpoints use pre-volume
-loopback with decibel attenuation. Mute and unreadable master controls silence the
-entire outgoing packet. Windows already processed post-volume packets are not
-attenuated twice.
+Windows post-volume loopback is preferred. Unsupported endpoints use ordinary
+loopback and report `AU_POST_VOLUME_UNSUPPORTED`: software master attenuation can
+already be present, so no speculative extra gain is applied. Hardware-only volume
+attenuation on these endpoints depends on the driver. Mute, zero volume and
+unreadable master controls silence the entire outgoing packet, including queued
+PCM before encoding. Master attenuation is never applied twice.
 
 When Sunshine changes audio endpoints, it transfers the current logical slider and
 mute before changing default devices. Disconnect transfers the final controls back
