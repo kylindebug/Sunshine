@@ -10,6 +10,17 @@
 
 namespace platf::audio::volume_policy {
   /**
+   * @brief Treat a zero master slider as silence even when Windows mute is false.
+   * @param known Whether both master controls were read.
+   * @param muted Windows master-mute state.
+   * @param slider Windows master slider scalar.
+   * @return True for mute, zero volume, or unreadable controls.
+   */
+  inline bool silence_required(bool known, bool muted, float slider) {
+    return !known || muted || !std::isfinite(slider) || slider <= 0.0f;
+  }
+
+  /**
    * @brief Skip an unchanged route only when no final logical controls need restoring.
    * @param restoring Whether a routed session is returning to the host endpoints.
    * @param roles_match Whether all current roles already match the requested route.

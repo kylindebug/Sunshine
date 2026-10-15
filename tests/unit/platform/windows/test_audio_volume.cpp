@@ -12,6 +12,14 @@
 
 using namespace platf::audio::volume_policy;
 
+TEST(AudioVolume, ZeroSliderMustSilenceEvenWithoutMasterMute) {
+  EXPECT_TRUE(silence_required(true, false, 0.0f));
+  EXPECT_TRUE(silence_required(true, true, 0.5f));
+  EXPECT_TRUE(silence_required(false, false, 1.0f));
+  EXPECT_TRUE(silence_required(true, false, std::numeric_limits<float>::quiet_NaN()));
+  EXPECT_FALSE(silence_required(true, false, 0.5f));
+}
+
 TEST(AudioVolume, AlreadyRestoredRolesStillRequireFinalLogicalVolumeTransfer) {
   EXPECT_FALSE(skip_transition(true, true));
   EXPECT_FALSE(skip_transition(true, false));

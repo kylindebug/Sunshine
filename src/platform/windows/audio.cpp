@@ -659,7 +659,7 @@ namespace platf::audio {
      * @return S_OK after publishing a mute state.
      */
     HRESULT STDMETHODCALLTYPE OnNotify(PAUDIO_VOLUME_NOTIFICATION_DATA data) override {
-      muted->store(!data || data->bMuted);
+      muted->store(volume_policy::silence_required(data != nullptr, data ? data->bMuted : TRUE, data ? data->fMasterVolume : 0.0f));
       return S_OK;
     }
   };
@@ -708,9 +708,10 @@ namespace platf::audio {
       if (config::audio.follow_host_volume) {
         volume_policy::state_t state;
         BOOL muted {TRUE};
-        if (endpoint_volume && SUCCEEDED(endpoint_volume->GetMute(&muted)) && SUCCEEDED(endpoint_volume->GetMasterVolumeLevel(&state.db))) {
+        float slider {};
+        if (endpoint_volume && SUCCEEDED(endpoint_volume->GetMute(&muted)) && SUCCEEDED(endpoint_volume->GetMasterVolumeLevel(&state.db)) && SUCCEEDED(endpoint_volume->GetMasterVolumeLevelScalar(&slider))) {
           state.valid = true;
-          state.muted = muted;
+          state.muted = volume_policy::silence_required(true, muted, slider);
         }
         if (!state.valid) {
           mute_notification.muted->store(true);
@@ -774,8 +775,9 @@ namespace platf::audio {
       }
       if (config::audio.follow_host_volume && endpoint_volume) {
         BOOL muted {TRUE};
-        if (SUCCEEDED(endpoint_volume->GetMute(&muted))) {
-          mute_notification.muted->store(muted);
+        float slider {};
+        if (SUCCEEDED(endpoint_volume->GetMute(&muted)) && SUCCEEDED(endpoint_volume->GetMasterVolumeLevelScalar(&slider))) {
+          mute_notification.muted->store(volume_policy::silence_required(true, muted, slider));
         }
         if (FAILED(endpoint_volume->RegisterControlChangeNotify(&mute_notification))) {
           mute_notification.muted->store(true);
