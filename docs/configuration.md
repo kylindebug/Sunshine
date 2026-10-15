@@ -908,7 +908,11 @@ attenuated twice.
 
 When Sunshine changes audio endpoints, it transfers the current logical slider and
 mute before changing default devices. Disconnect transfers the final controls back
-and restores the original endpoint for each Windows audio role. A failed transition
+and restores the original endpoint for each Windows audio role.
+When routing to virtual speakers with client host playback disabled, the original
+role endpoints are muted as well, covering system sounds pinned to those devices.
+Their final master controls follow the virtual endpoint on normal disconnect.
+The change never relies on routing alone to silence physical playback. A failed transition
 attempts rollback instead of selecting an arbitrary fallback device. Endpoint removal
 or process crashes require separate recovery; this policy does not modify Android's
 independent media volume or promise equal acoustic loudness on different speakers.

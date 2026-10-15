@@ -810,6 +810,16 @@ namespace platf {
      */
     virtual capture_e sample(std::vector<float> &frame_buffer) = 0;
 
+    /**
+     * @brief Provide a thread-safe final mute check for queued PCM before encoding.
+     * @return Callback returning true when outgoing PCM must be silenced.
+     */
+    virtual std::function<bool()> silence_check() {
+      return [] {
+        return false;
+      };
+    }
+
     virtual ~mic_t() = default;
   };
 
@@ -825,6 +835,13 @@ namespace platf {
      * @return Status from updating sink.
      */
     virtual int set_sink(const std::string &sink) = 0;
+
+    /**
+     * @brief Inform routing backends whether this stream permits physical playback.
+     * @param enabled Whether host playback is enabled by the client.
+     */
+    virtual void set_host_playback([[maybe_unused]] bool enabled) {
+    }
 
     /**
      * @brief Create a microphone capture stream for the requested layout.

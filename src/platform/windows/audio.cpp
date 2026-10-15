@@ -619,11 +619,64 @@ namespace platf::audio {
     std::atomic_bool default_render_device_changed_flag;
   };
 
-  /**
-   * @brief WASAPI microphone capture stream and endpoint notification state.
-   */
+  /** @brief Nonblocking endpoint-mute observer shared with the encoder thread. */
+  class mute_notification_t: public IAudioEndpointVolumeCallback {
+  public:
+    std::shared_ptr<std::atomic_bool> muted {std::make_shared<std::atomic_bool>(true)};  ///< Fail-silent state visible to the encoder.
+
+    /** @brief Externally owned callback reference count. @return Stable reference count. */
+    ULONG STDMETHODCALLTYPE AddRef() override {
+      return 1;
+    }
+
+    /** @brief Externally owned callback release. @return Stable reference count. */
+    ULONG STDMETHODCALLTYPE Release() override {
+      return 1;
+    }
+
+    /**
+     * @brief Expose the endpoint volume notification interface.
+     * @param iid Requested COM interface.
+     * @param object Receives the supported interface.
+     * @return COM query status.
+     */
+    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void **object) override {
+      if (!object) {
+        return E_POINTER;
+      }
+      *object = nullptr;
+      if (iid == IID_IUnknown || iid == __uuidof(IAudioEndpointVolumeCallback)) {
+        *object = static_cast<IAudioEndpointVolumeCallback *>(this);
+        AddRef();
+        return S_OK;
+      }
+      return E_NOINTERFACE;
+    }
+
+    /**
+     * @brief Publish master mute without calling COM from the callback.
+     * @param data Current endpoint controls supplied by Windows.
+     * @return S_OK after publishing a mute state.
+     */
+    HRESULT STDMETHODCALLTYPE OnNotify(PAUDIO_VOLUME_NOTIFICATION_DATA data) override {
+      muted->store(!data || data->bMuted);
+      return S_OK;
+    }
+  };
+
+  /** @brief WASAPI microphone capture stream and endpoint notification state. */
   class mic_wasapi_t: public mic_t {
   public:
+    /** @brief Provide the shared master-mute check. @return Thread-safe encoder callback. */
+    std::function<bool()> silence_check() override {
+      if (!config::audio.follow_host_volume) {
+        return mic_t::silence_check();
+      }
+      return [state = mute_notification.muted] {
+        return state->load();
+      };
+    }
+
     /**
      * @brief Deliver a captured audio sample to Sunshine's audio pipeline.
      *
@@ -659,7 +712,10 @@ namespace platf::audio {
           state.valid = true;
           state.muted = muted;
         }
-        // Recheck at packet delivery, so pre-mute buffered audio cannot escape.
+        if (!state.valid) {
+          mute_notification.muted->store(true);
+        }
+        // Apply observed controls here; the encoder separately gates queued PCM.
         volume_policy::apply(sample_out, state, post_volume);
       }
 
@@ -715,6 +771,18 @@ namespace platf::audio {
 
       if (config::audio.follow_host_volume && FAILED(device->Activate(__uuidof(IAudioEndpointVolume), CLSCTX_ALL, nullptr, (void **) &endpoint_volume))) {
         BOOST_LOG(error) << "[AU_VOLUME_UNAVAILABLE] Master volume is unreadable; outgoing audio remains silent";
+      }
+      if (config::audio.follow_host_volume && endpoint_volume) {
+        BOOL muted {TRUE};
+        if (SUCCEEDED(endpoint_volume->GetMute(&muted))) {
+          mute_notification.muted->store(muted);
+        }
+        if (FAILED(endpoint_volume->RegisterControlChangeNotify(&mute_notification))) {
+          mute_notification.muted->store(true);
+          BOOST_LOG(error) << "[AU_MUTE_NOTIFY_FAILED] Outgoing audio remains silent";
+        } else {
+          mute_notification_registered = true;
+        }
       }
 
       for (const auto &format : formats) {
@@ -807,6 +875,9 @@ namespace platf::audio {
     }
 
     ~mic_wasapi_t() override {
+      if (mute_notification_registered) {
+        endpoint_volume->UnregisterControlChangeNotify(&mute_notification);
+      }
       if (device_enum) {
         device_enum->UnregisterEndpointNotificationCallback(&endpt_notification);
       }
@@ -926,6 +997,8 @@ namespace platf::audio {
     audio_capture_t audio_capture;  ///< WASAPI capture client used to read sample packets.
     util::safe_ptr<IAudioEndpointVolume, Release<IAudioEndpointVolume>> endpoint_volume;  ///< Master controls for the captured endpoint.
     bool post_volume {};  ///< Windows already applied master attenuation to the captured PCM.
+    mute_notification_t mute_notification;  ///< Shared mute observer for queued audio.
+    bool mute_notification_registered {};  ///< Callback registration owned by this microphone.
 
     audio_notification_t endpt_notification;  ///< Endpoint notification callback registered with Windows.
     std::optional<std::function<void()>> default_endpt_changed_cb;  ///< Callback invoked when the default endpoint changes.
@@ -946,6 +1019,14 @@ namespace platf::audio {
    */
   class audio_control_t: public ::platf::audio_control_t {
   public:
+    /**
+     * @brief Remember whether virtual routing must also silence physical endpoints.
+     * @param enabled Client host-playback preference.
+     */
+    void set_host_playback(bool enabled) override {
+      host_playback_enabled = enabled;
+    }
+
     /**
      * @brief Query host and virtual sink names available to Sunshine.
      *
@@ -1259,13 +1340,22 @@ namespace platf::audio {
 
       std::vector<change_t> changes;
       auto rollback = util::fail_guard([&] {
-        for (int role = 0; role < (int) ERole_enum_count; ++role) {
-          policy->SetDefaultEndpoint(previous_roles[role].c_str(), (ERole) role);
-        }
-        for (auto &change : changes) {
-          if (!write_master(change.volume, change.scalar, change.muted)) {
-            BOOST_LOG(error) << "[AU_ROUTE_ROLLBACK_FAILED] Endpoint remains in its last safe state";
+        const bool routes_restored = volume_policy::rollback((int) ERole_enum_count, [&](int role) {
+          if (FAILED(policy->SetDefaultEndpoint(previous_roles[role].c_str(), (ERole) role))) {
+            BOOST_LOG(error) << "[AU_ROUTE_ROLLBACK_FAILED] role=" << role << "; changed endpoints will remain muted";
+            return false;
           }
+          return true;
+        },
+                                                             [&](bool safe_to_unmute) {
+                                                               for (auto &change : changes) {
+                                                                 if (!write_master(change.volume, change.scalar, safe_to_unmute ? change.muted : true)) {
+                                                                   BOOST_LOG(error) << "[AU_ROUTE_ROLLBACK_FAILED] Endpoint remains in its last safe state";
+                                                                 }
+                                                               }
+                                                             });
+        if (!routes_restored && !original_roles) {
+          original_roles = previous_roles;
         }
       });
 
@@ -1288,6 +1378,31 @@ namespace platf::audio {
         if (!write_master(changes.back().volume, scalar, muted)) {
           BOOST_LOG(error) << "[AU_VOLUME_TRANSFER_FAILED] Audio route will be rolled back";
           return -1;
+        }
+      }
+
+      // A Windows sound session may stay pinned to an old physical endpoint.
+      // Routing alone cannot silence those sounds when host playback is disabled.
+      if (!restoring && extract_virtual_sink_info(sink) && !host_playback_enabled) {
+        const auto &host_roles = original_roles ? *original_roles : previous_roles;
+        for (int role = 0; role < (int) ERole_enum_count; ++role) {
+          if (host_roles[role] == device_id || std::find(host_roles.begin(), host_roles.begin() + role, host_roles[role]) != host_roles.begin() + role) {
+            continue;
+          }
+          device_t endpoint;
+          if (FAILED(device_enum->GetDevice(host_roles[role].c_str(), &endpoint))) {
+            return -1;
+          }
+          change_t change;
+          change.volume = master_controls(endpoint);
+          if (!read_master(change.volume, change.scalar, change.muted)) {
+            return -1;
+          }
+          changes.push_back(std::move(change));
+          if (FAILED(changes.back().volume->SetMute(TRUE, nullptr))) {
+            BOOST_LOG(error) << "[AU_HOST_MUTE_FAILED] Audio route will be rolled back";
+            return -1;
+          }
         }
       }
 
@@ -1606,6 +1721,7 @@ namespace platf::audio {
     audio::device_enum_t device_enum;  ///< Device enumerator used to query and watch audio endpoints.
     std::string assigned_sink;  ///< Sink assigned while Sunshine captures host audio, captured directly by the microphone.
     std::optional<std::array<std::wstring, ERole_enum_count>> original_roles;  ///< Original default endpoints for all roles during a routed session.
+    bool host_playback_enabled {true};  ///< Client preference, available before the first default-device switch.
   };
 
 #ifdef SUNSHINE_TESTS

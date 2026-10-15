@@ -46,4 +46,22 @@ namespace platf::audio::volume_policy {
     }
   }
 
+  /**
+   * @brief Restore each role before allowing old endpoint controls to unmute.
+   * @param role_count Number of original Windows audio roles.
+   * @param restore_role Callback restoring one role and returning success.
+   * @param restore_controls Callback receiving whether unmuting is safe.
+   * @return True only if all roles were restored.
+   */
+  template<class RestoreRole, class RestoreControls>
+  bool rollback(int role_count, RestoreRole restore_role, RestoreControls restore_controls) {
+    bool restored {true};
+    for (int role = 0; role < role_count; ++role) {
+      if (!restore_role(role)) {
+        restored = false;
+      }
+    }
+    restore_controls(restored);
+    return restored;
+  }
 }  // namespace platf::audio::volume_policy

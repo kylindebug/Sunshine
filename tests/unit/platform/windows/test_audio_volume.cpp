@@ -2,9 +2,11 @@
  * @file tests/unit/platform/windows/test_audio_volume.cpp
  * @brief Regression checks for master mute, queued audio and exactly-once attenuation.
  */
+#include "src/audio_silence.h"
 #include "src/platform/windows/audio_volume_policy.h"
 
 #include <array>
+#include <atomic>
 #include <gtest/gtest.h>
 #include <limits>
 
@@ -42,4 +44,48 @@ TEST(AudioVolume, UnmuteAppliesTheLatestLevel) {
   EXPECT_EQ(gain({true, true, -6.0f}, false), 0.0f);
   EXPECT_NEAR(gain({true, false, -6.0f}, false), 0.501187f, 0.00001f);
   EXPECT_EQ(gain({true, false, 0.0f}, false), 1.0f);
+}
+
+TEST(AudioVolume, QueuedFramesObserveMuteAtEncodingRatherThanCapture) {
+  std::array<std::array<float, 2>, 3> queued {{{0.5f, -0.5f}, {0.4f, -0.4f}, {0.3f, -0.3f}}};
+  std::atomic_bool muted {false};
+  auto check = [&] {
+    return muted.load();
+  };
+  audio::silence_if_needed(queued[0], check);
+  EXPECT_EQ(queued[0][0], 0.5f);
+  muted.store(true);
+  for (int i = 1; i < 3; ++i) {
+    audio::silence_if_needed(queued[i], check);
+    EXPECT_EQ(queued[i], (std::array<float, 2> {}));
+  }
+}
+
+TEST(AudioVolume, FailedRoleRollbackCannotRestoreAnUnmutedDestination) {
+  int restored_roles {};
+  bool destination_muted {false};
+  const bool result = rollback(3, [&](int role) {
+    ++restored_roles;
+    return role != 1;
+  },
+                               [&](bool safe_to_unmute) {
+                                 destination_muted = !safe_to_unmute;
+                               });
+  EXPECT_FALSE(result);
+  EXPECT_EQ(restored_roles, 3);
+  EXPECT_TRUE(destination_muted);
+}
+
+TEST(AudioVolume, SuccessfulRoleRollbackAllowsPreviousControls) {
+  int restored_roles {};
+  bool controls_restored {};
+  EXPECT_TRUE(rollback(3, [&](int) {
+    ++restored_roles;
+    return true;
+  },
+                       [&](bool safe) {
+                         controls_restored = safe;
+                       }));
+  EXPECT_EQ(restored_roles, 3);
+  EXPECT_TRUE(controls_restored);
 }

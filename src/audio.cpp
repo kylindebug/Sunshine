@@ -10,6 +10,7 @@
 
 // local includes
 #include "audio.h"
+#include "audio_silence.h"
 #include "config.h"
 #include "globals.h"
 #include "logging.h"
@@ -105,8 +106,9 @@ namespace audio {
    * @param samples Queue of captured PCM sample buffers to encode.
    * @param config Audio stream settings negotiated with the client.
    * @param channel_data Platform-specific audio capture context passed to packet metadata.
+   * @param silence_check Thread-safe final master-mute check for queued PCM.
    */
-  void encodeThread(sample_queue_t samples, config_t config, void *channel_data) {
+  void encodeThread(sample_queue_t samples, config_t config, void *channel_data, std::function<bool()> silence_check) {
     auto packets = mail::man->queue<packet_t>(mail::audio_packets);
     auto stream = stream_configs[map_stream(config.channels, config.flags[config_t::HIGH_QUALITY])];
     if (config.flags[config_t::CUSTOM_SURROUND_PARAMS]) {
@@ -137,6 +139,8 @@ namespace audio {
     auto frame_size = config.packetDuration * stream.sampleRate / 1000;
     while (auto sample = samples->pop()) {
       buffer_t packet {1400};
+
+      silence_if_needed(*sample, silence_check);
 
       int bytes = opus_multistream_encode_float(opus.get(), sample->data(), frame_size, std::begin(packet), (opus_int32) packet.size());
       if (bytes < 0) {
@@ -210,6 +214,7 @@ namespace audio {
 
     // Only the first to start a session may change the default sink
     if (!ref->sink_flag->exchange(true, std::memory_order_acquire)) {
+      control->set_host_playback(config.flags[config_t::HOST_AUDIO]);
       // If the selected sink is different than the current one, change sinks.
       ref->restore_sink = ref->sink.host != *sink;
       if (ref->restore_sink) {
@@ -234,7 +239,7 @@ namespace audio {
     platf::adjust_thread_priority(platf::thread_priority_e::critical);
 
     auto samples = std::make_shared<sample_queue_t::element_type>(30);
-    std::jthread thread {encodeThread, samples, config, channel_data};
+    std::jthread thread {encodeThread, samples, config, channel_data, mic->silence_check()};
 
     auto fg = util::fail_guard([&]() {
       samples->stop();
