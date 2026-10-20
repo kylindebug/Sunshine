@@ -128,12 +128,18 @@ namespace platf::cursor {
       return same(current, *applied_) ? result_e::unchanged : relinquish();
     }
 
-    /** @brief Report whether a mouse-less disconnect still owns a temporary fallback. */
+    /**
+     * @brief Report whether a mouse-less disconnect still owns a temporary fallback.
+     * @return True when original settings are retained until a usable mouse returns.
+     */
     bool deferred() const {
       return deferred_;
     }
 
-    /** @brief Report whether a failed restore needs another attempt. */
+    /**
+     * @brief Report whether a failed restore needs another attempt.
+     * @return True when a failed settings operation requires retrying restoration.
+     */
     bool needs_retry() const {
       return retry_;
     }
