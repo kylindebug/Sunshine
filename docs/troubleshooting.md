@@ -376,6 +376,18 @@ Check the Virtual HID Driver version and license sections on the Web UI Troubles
 is disabled. The same live refresh used by the keyboard path also switches the mouse between HID and SendInput without
 requiring a Sunshine restart.
 
+### Mouse cursor disappears on the host after disconnecting
+On Windows, disabling the touchpad and having no usable mouse can make the system hide the cursor. Sunshine temporarily
+enables Mouse Keys when a stream needs a cursor. After the last stream disconnects, it restores the original settings
+only if Windows still reports a mouse after removing that temporary fallback. Otherwise it retains the runtime fallback
+and logs `CURSOR_RESTORE_DEFERRED`, keeping the desktop usable.
+
+Connecting or moving a local mouse retries restoration and logs `CURSOR_RESTORE_COMPLETE` when successful. This passive
+observer does not suppress normal mouse input. Existing Mouse Keys speeds and hotkeys are preserved, no change is saved
+to the user profile, and a manual settings change relinquishes Sunshine's ownership (`CURSOR_USER_OVERRIDE`). If the
+observer cannot start, restoration is retried on a later stream transition. A retained fallback may remain enabled until
+the Windows session ends if Sunshine exits before a local mouse returns.
+
 ### Permission denied
 Since Sunshine runs as a service on Windows, it may not have the same level of access that your regular user account
 has. You may get permission denied errors when attempting to launch a game or application from a non-system drive.

@@ -44,6 +44,7 @@
 
 // local includes
 #include "misc.h"
+#include "mouse_keys_guard.h"
 #include "nvprefs/nvprefs_interface.h"
 #include "src/entry_handler.h"
 #include "src/globals.h"
@@ -126,9 +127,6 @@ namespace platf {
    * @brief Owning pointer for `GetAdaptersAddresses` results.
    */
   using adapteraddrs_t = util::c_ptr<IP_ADAPTER_ADDRESSES>;
-
-  bool enabled_mouse_keys = false;  ///< Tracks whether Windows Mouse Keys was enabled before Sunshine changed it.
-  MOUSEKEYS previous_mouse_keys_state;  ///< Previous mouse keys state.
 
   HANDLE qos_handle = nullptr;  ///< QoS handle.
 
@@ -1223,36 +1221,11 @@ namespace platf {
         }
       }
     }
-    enable_mouse_keys();
+    cursor::streaming_started();
   }
 
   void enable_mouse_keys() {
-    // If there is no mouse connected, enable Mouse Keys to force the cursor to appear
-    if (!GetSystemMetrics(SM_MOUSEPRESENT)) {
-      BOOST_LOG(info) << "A mouse was not detected. Sunshine will enable Mouse Keys while streaming to force the mouse cursor to appear.";
-
-      // Get the current state of Mouse Keys so we can restore it when streaming is over
-      previous_mouse_keys_state.cbSize = sizeof(previous_mouse_keys_state);
-      if (SystemParametersInfoW(SPI_GETMOUSEKEYS, 0, &previous_mouse_keys_state, 0)) {
-        MOUSEKEYS new_mouse_keys_state = {};
-
-        // Enable Mouse Keys
-        new_mouse_keys_state.cbSize = sizeof(new_mouse_keys_state);
-        new_mouse_keys_state.dwFlags = MKF_MOUSEKEYSON | MKF_AVAILABLE;
-        new_mouse_keys_state.iMaxSpeed = 10;
-        new_mouse_keys_state.iTimeToMaxSpeed = 1000;
-        if (SystemParametersInfoW(SPI_SETMOUSEKEYS, 0, &new_mouse_keys_state, 0)) {
-          // Remember to restore the previous settings when we stop streaming
-          enabled_mouse_keys = true;
-        } else {
-          auto winerr = GetLastError();
-          BOOST_LOG(warning) << "Unable to enable Mouse Keys: "sv << winerr;
-        }
-      } else {
-        auto winerr = GetLastError();
-        BOOST_LOG(warning) << "Unable to get current state of Mouse Keys: "sv << winerr;
-      }
-    }
+    cursor::ensure_mouse_cursor();
   }
 
   void streaming_will_stop() {
@@ -1278,14 +1251,7 @@ namespace platf {
       wlan_handle = nullptr;
     }
 
-    // Restore Mouse Keys back to the previous settings if we turned it on
-    if (enabled_mouse_keys) {
-      enabled_mouse_keys = false;
-      if (!SystemParametersInfoW(SPI_SETMOUSEKEYS, 0, &previous_mouse_keys_state, 0)) {
-        auto winerr = GetLastError();
-        BOOST_LOG(warning) << "Unable to restore original state of Mouse Keys: "sv << winerr;
-      }
-    }
+    cursor::streaming_stopped();
   }
 
   void restart_on_exit() {
