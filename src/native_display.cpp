@@ -8,6 +8,7 @@
 #include <stdexcept>
 
 #ifdef _WIN32
+  #include "platform/windows/native_display_desktop.h"
   #include "platform/windows/native_display_layout.h"
 
   #include <cfgmgr32.h>
@@ -42,9 +43,13 @@ namespace native_display {
   namespace {
     using namespace std::chrono_literals;
     using win::layout;
+    win::desktop_executor display_calls;  ///< CCD worker outlives the privacy controller.
 
     /** @brief Throw an actionable Win32 failure. */
     void check(LONG code, const char *operation) {
+      if (code == ERROR_ACCESS_DENIED) {
+        throw std::runtime_error("[ND_CONSOLE_ACCESS] " + std::string(operation) + ": Windows error 5; the current console desktop denied display access. Verify SunshineService and its active console session; physical capture remains blocked.");
+      }
       if (code != ERROR_SUCCESS) {
         throw std::runtime_error(std::string(operation) + ": Windows error " + std::to_string(code));
       }
@@ -52,31 +57,35 @@ namespace native_display {
 
     /** @brief Read CCD, bounded against hotplug races. */
     layout read(UINT32 flags = QDC_ONLY_ACTIVE_PATHS) {
-      for (int attempt = 0; attempt < 5; ++attempt) {
-        UINT32 pc {}, mc {};
-        check(GetDisplayConfigBufferSizes(flags, &pc, &mc), "Display enumeration");
-        if (!win::valid_query_capacity(flags, pc, mc)) {
-          throw std::runtime_error("Unexpected display query capacity: flags=" + std::to_string(flags) + ", paths=" + std::to_string(pc) + ", modes=" + std::to_string(mc));
+      return display_calls.call([=] {
+        for (int attempt = 0; attempt < 5; ++attempt) {
+          UINT32 pc {}, mc {};
+          check(GetDisplayConfigBufferSizes(flags, &pc, &mc), "Display enumeration");
+          if (!win::valid_query_capacity(flags, pc, mc)) {
+            throw std::runtime_error("Unexpected display query capacity: flags=" + std::to_string(flags) + ", paths=" + std::to_string(pc) + ", modes=" + std::to_string(mc));
+          }
+          layout value {std::vector<DISPLAYCONFIG_PATH_INFO>(pc), std::vector<DISPLAYCONFIG_MODE_INFO>(mc)};
+          auto result = QueryDisplayConfig(flags, &pc, value.paths.data(), &mc, value.modes.data(), nullptr);
+          if (result == ERROR_INSUFFICIENT_BUFFER) {
+            continue;
+          }
+          check(result, "Display query");
+          value.paths.resize(pc);
+          value.modes.resize(mc);
+          return value;
         }
-        layout value {std::vector<DISPLAYCONFIG_PATH_INFO>(pc), std::vector<DISPLAYCONFIG_MODE_INFO>(mc)};
-        auto result = QueryDisplayConfig(flags, &pc, value.paths.data(), &mc, value.modes.data(), nullptr);
-        if (result == ERROR_INSUFFICIENT_BUFFER) {
-          continue;
-        }
-        check(result, "Display query (unlock the console desktop and retry)");
-        value.paths.resize(pc);
-        value.modes.resize(mc);
-        return value;
-      }
-      throw std::runtime_error("Display topology is still changing; retry connection");
+        throw std::runtime_error("Display topology is still changing; retry connection");
+      });
     }
 
     /** @brief Read stable target identity. */
     std::wstring identity(const DISPLAYCONFIG_PATH_INFO &path) {
-      DISPLAYCONFIG_TARGET_DEVICE_NAME name {};
-      name.header = {DISPLAYCONFIG_DEVICE_INFO_GET_TARGET_NAME, sizeof(name), path.targetInfo.adapterId, path.targetInfo.id};
-      check(DisplayConfigGetDeviceInfo(&name.header), "Display target identity");
-      return name.monitorDevicePath;
+      return display_calls.call([&] {
+        DISPLAYCONFIG_TARGET_DEVICE_NAME name {};
+        name.header = {DISPLAYCONFIG_DEVICE_INFO_GET_TARGET_NAME, sizeof(name), path.targetInfo.adapterId, path.targetInfo.id};
+        check(DisplayConfigGetDeviceInfo(&name.header), "Display target identity");
+        return std::wstring(name.monitorDevicePath);
+      });
     }
 
     /** @brief Only the explicitly supported MTT monitor may become the privacy target. */
@@ -86,12 +95,14 @@ namespace native_display {
 
     /** @brief Apply a validated topology and save its mode for the next activation. */
     void apply(layout value) {
-      if (!win::valid(value)) {
-        throw std::runtime_error("Invalid display snapshot");
-      }
-      constexpr UINT32 common = SDC_USE_SUPPLIED_DISPLAY_CONFIG | SDC_ALLOW_CHANGES;
-      check(SetDisplayConfig(static_cast<UINT32>(value.paths.size()), value.paths.data(), static_cast<UINT32>(value.modes.size()), value.modes.data(), common | SDC_VALIDATE), "Display validation");
-      check(SetDisplayConfig(static_cast<UINT32>(value.paths.size()), value.paths.data(), static_cast<UINT32>(value.modes.size()), value.modes.data(), common | SDC_APPLY | SDC_SAVE_TO_DATABASE), "Display application");
+      display_calls.call([&] {
+        if (!win::valid(value)) {
+          throw std::runtime_error("Invalid display snapshot");
+        }
+        constexpr UINT32 common = SDC_USE_SUPPLIED_DISPLAY_CONFIG | SDC_ALLOW_CHANGES;
+        check(SetDisplayConfig(static_cast<UINT32>(value.paths.size()), value.paths.data(), static_cast<UINT32>(value.modes.size()), value.modes.data(), common | SDC_VALIDATE), "Display validation");
+        check(SetDisplayConfig(static_cast<UINT32>(value.paths.size()), value.paths.data(), static_cast<UINT32>(value.modes.size()), value.modes.data(), common | SDC_APPLY | SDC_SAVE_TO_DATABASE), "Display application");
+      });
     }
 
     /** @brief Test target, dimensions and refresh before doing a modeset. */
@@ -107,14 +118,16 @@ namespace native_display {
 
     /** @brief Resolve the current source name instead of retaining a stale GDI alias. */
     std::string source_name(const DISPLAYCONFIG_PATH_INFO &path) {
-      DISPLAYCONFIG_SOURCE_DEVICE_NAME name {};
-      name.header = {DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME, sizeof(name), path.sourceInfo.adapterId, path.sourceInfo.id};
-      check(DisplayConfigGetDeviceInfo(&name.header), "Capture output selection");
-      std::string result;
-      for (const wchar_t *c = name.viewGdiDeviceName; *c; ++c) {
-        result += static_cast<char>(*c);
-      }
-      return result;
+      return display_calls.call([&] {
+        DISPLAYCONFIG_SOURCE_DEVICE_NAME name {};
+        name.header = {DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME, sizeof(name), path.sourceInfo.adapterId, path.sourceInfo.id};
+        check(DisplayConfigGetDeviceInfo(&name.header), "Capture output selection");
+        std::string result;
+        for (const wchar_t *c = name.viewGdiDeviceName; *c; ++c) {
+          result += static_cast<char>(*c);
+        }
+        return result;
+      });
     }
 
     /** @brief Enable/disable only a single verified Root\\MttVDD adapter using Config Manager. */
@@ -181,30 +194,6 @@ namespace native_display {
       return result;
     }
 
-    /** @brief Attach only the worker thread to the current input desktop for CCD access. */
-    class input_desktop {
-      HDESK previous {GetThreadDesktop(GetCurrentThreadId())};  ///< Borrowed desktop.
-      HDESK current {};  ///< Owned desktop handle.
-
-    public:
-      /** @brief Open the current desktop without displaying or unlocking it. */
-      input_desktop() {
-        current = OpenInputDesktop(0, FALSE, GENERIC_ALL);
-        if (!current || !SetThreadDesktop(current)) {
-          if (current) {
-            CloseDesktop(current);
-          }
-          throw std::runtime_error("Cannot access input desktop for display recovery; journal retained");
-        }
-      }
-
-      /** @brief Restore worker desktop and release only the owned handle. */
-      ~input_desktop() {
-        SetThreadDesktop(previous);
-        CloseDesktop(current);
-      }
-    };
-
     /** @brief Recover onto connected physical targets if a saved external monitor was removed. */
     void physical_fallback(const layout &baseline) {
       auto all = read(QDC_ALL_PATHS);
@@ -237,7 +226,9 @@ namespace native_display {
         path.sourceInfo.modeInfoIdx = DISPLAYCONFIG_PATH_MODE_IDX_INVALID;
         path.targetInfo.modeInfoIdx = DISPLAYCONFIG_PATH_MODE_IDX_INVALID;
       }
-      check(SetDisplayConfig(static_cast<UINT32>(targets.size()), targets.data(), 0, nullptr, SDC_TOPOLOGY_SUPPLIED | SDC_APPLY | SDC_ALLOW_PATH_ORDER_CHANGES), "Restore connected physical topology");
+      display_calls.call([&] {
+        check(SetDisplayConfig(static_cast<UINT32>(targets.size()), targets.data(), 0, nullptr, SDC_TOPOLOGY_SUPPLIED | SDC_APPLY | SDC_ALLOW_PATH_ORDER_CHANGES), "Restore connected physical topology");
+      });
     }
 
     /** @brief Serialize all Windows operations on the thread that owns the legacy guard mutex. */
@@ -410,7 +401,6 @@ namespace native_display {
                             })) {
             throw std::runtime_error("Cannot lock desktop; retaining private display and journal");
           }
-          input_desktop desktop;
           try {
             apply(baseline);
           } catch (const std::exception &error) {
@@ -509,13 +499,8 @@ namespace native_display {
             observed = win::mode_summary(current);
             stable = matches(current, target, width, height, fps) ? stable + 1 : 0;
             if (stable == 3) {
-              DISPLAYCONFIG_SOURCE_DEVICE_NAME name {};
               const auto &path = current.paths.front();
-              name.header = {DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME, sizeof(name), path.sourceInfo.adapterId, path.sourceInfo.id};
-              check(DisplayConfigGetDeviceInfo(&name.header), "Capture output selection");
-              for (const wchar_t *c = name.viewGdiDeviceName; *c; ++c) {
-                selector += static_cast<char>(*c);
-              }
+              selector = source_name(path);
               hook_owner = this;
               keyboard = SetWindowsHookExW(WH_KEYBOARD_LL, keyboard_event, GetModuleHandleW(nullptr), 0);
               if (!keyboard) {

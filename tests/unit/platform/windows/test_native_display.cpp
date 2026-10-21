@@ -5,10 +5,156 @@
 #include "src/native_display_state.h"
 #include "src/setup_diagnostics.h"
 #ifdef _WIN32
+  #include "src/platform/windows/native_display_desktop.h"
   #include "src/platform/windows/native_display_layout.h"
 
   #include <fstream>
   #include <gtest/gtest.h>
+
+namespace {
+  /** @brief Model desktop changes and permission failures without changing Windows state. */
+  class NativeDesktopTest: public testing::Test {
+  protected:
+    HDESK original {reinterpret_cast<HDESK>(1)};  ///< Borrowed worker desktop.
+    HDESK input {reinterpret_cast<HDESK>(2)};  ///< Desktop currently receiving input.
+    HDESK attached {original};  ///< Worker desktop selected by the fake API.
+    bool attach_ok {true};  ///< Inject SetThreadDesktop failure.
+    std::vector<HDESK> closed;  ///< Owned handles released after each job.
+    native_display::win::desktop_api api {
+      [&] {
+        return original;
+      },
+      [&] {
+        return input;
+      },
+      [&](HDESK desktop) {
+        if (!attach_ok) {
+          return false;
+        }
+        attached = desktop;
+        return true;
+      },
+      [&](HDESK desktop) {
+        closed.push_back(desktop);
+      },
+      [] {
+        return ERROR_ACCESS_DENIED;
+      }
+    };  ///< Worker-only test operations.
+  };
+
+  TEST_F(NativeDesktopTest, PreparationReconnectAndHotplugFollowCurrentDesktop) {
+    native_display::win::desktop_executor executor(api);
+    std::thread::id worker;
+    for (int cycle = 0; cycle < 6; ++cycle) {
+      input = reinterpret_cast<HDESK>(static_cast<std::uintptr_t>(2 + cycle));
+      EXPECT_EQ(executor.call([&] {
+        if (worker == std::thread::id {}) {
+          worker = std::this_thread::get_id();
+        }
+        EXPECT_EQ(std::this_thread::get_id(), worker);
+        EXPECT_EQ(attached, input);
+        return cycle;
+      }),
+                cycle);
+      EXPECT_EQ(attached, original);
+      ASSERT_EQ(closed.size(), static_cast<std::size_t>(cycle + 1));
+      EXPECT_EQ(closed.back(), input);
+    }
+    EXPECT_NE(worker, std::this_thread::get_id());
+  }
+
+  TEST_F(NativeDesktopTest, DisplayFailureRestoresDesktopAndWorkerCanRetry) {
+    native_display::win::desktop_executor executor(api);
+    EXPECT_THROW(executor.call([] {
+      throw std::runtime_error("Display validation failed");
+    }),
+                 std::runtime_error);
+    EXPECT_EQ(attached, original);
+    ASSERT_EQ(closed.size(), 1);
+    EXPECT_EQ(executor.call([] {
+      return 42;
+    }),
+              42);
+    EXPECT_EQ(closed.size(), 2);
+  }
+
+  TEST_F(NativeDesktopTest, DeniedInputDesktopNeverInvokesDisplayAndCanRetry) {
+    native_display::win::desktop_executor executor(api);
+    const auto available = input;
+    input = nullptr;
+    bool invoked = false;
+    try {
+      executor.call([&] {
+        invoked = true;
+      });
+      FAIL() << "Expected desktop permission failure";
+    } catch (const std::runtime_error &error) {
+      EXPECT_NE(std::string(error.what()).find("[ND_INPUT_DESKTOP] OpenInputDesktop: Windows error 5"), std::string::npos);
+    }
+    EXPECT_FALSE(invoked);
+    EXPECT_TRUE(closed.empty());
+    input = available;
+    executor.call([&] {
+      invoked = true;
+    });
+    EXPECT_TRUE(invoked);
+  }
+
+  TEST_F(NativeDesktopTest, MissingBorrowedDesktopNeverOpensOrClosesAHandle) {
+    native_display::win::desktop_executor executor(api);
+    original = nullptr;
+    bool invoked = false;
+    EXPECT_THROW(executor.call([&] {
+      invoked = true;
+    }),
+                 std::runtime_error);
+    EXPECT_FALSE(invoked);
+    EXPECT_TRUE(closed.empty());
+  }
+
+  TEST_F(NativeDesktopTest, FailedAttachClosesOnlyOwnedHandleAndDoesNotInvokeDisplay) {
+    native_display::win::desktop_executor executor(api);
+    attach_ok = false;
+    bool invoked = false;
+    EXPECT_THROW(executor.call([&] {
+      invoked = true;
+    }),
+                 std::runtime_error);
+    EXPECT_FALSE(invoked);
+    ASSERT_EQ(closed.size(), 1);
+    EXPECT_EQ(closed.front(), input);
+    attach_ok = true;
+    executor.call([&] {
+      invoked = true;
+    });
+    EXPECT_TRUE(invoked);
+    EXPECT_EQ(attached, original);
+  }
+
+  TEST_F(NativeDesktopTest, ConcurrentCallersShareOneSerializedWorker) {
+    native_display::win::desktop_executor executor(api);
+    std::thread::id worker;
+    std::vector<std::future<int>> callers;
+    for (int i = 0; i < 12; ++i) {
+      callers.push_back(std::async(std::launch::async, [&] {
+        return executor.call([&] {
+          if (worker == std::thread::id {}) {
+            worker = std::this_thread::get_id();
+          }
+          EXPECT_EQ(worker, std::this_thread::get_id());
+          EXPECT_EQ(attached, input);
+          return 7;
+        });
+      }));
+    }
+    for (auto &caller : callers) {
+      EXPECT_EQ(caller.get(), 7);
+    }
+    EXPECT_EQ(closed.size(), 12);
+    EXPECT_EQ(attached, original);
+  }
+}  // namespace
 
 TEST(NativeDisplay, ExistingApplicationsRemainDisabled) {
   EXPECT_EQ(native_display::parse(""), native_display::policy::disabled);

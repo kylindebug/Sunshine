@@ -388,6 +388,17 @@ to the user profile, and a manual settings change relinquishes Sunshine's owners
 observer cannot start, restoration is retried on a later stream transition. A retained fallback may remain enabled until
 the Windows session ends if Sunshine exits before a local mouse returns.
 
+### Native privacy desktop returns 503 after locking Windows
+A 503 response containing `Display validation: Windows error 5` means that Windows denied display configuration access
+before video capture started. CCD operations must use the current console input desktop, which can change when Windows
+locks or unlocks. Native privacy uses a separate display worker that follows the input desktop for preparation, capture
+identity queries, hotplug correction and physical display recovery. The keyboard hook stays on its own controller thread.
+
+`ND_INPUT_DESKTOP` identifies an input-desktop open/attach failure, while `ND_CONSOLE_ACCESS` identifies a CCD access
+failure. Check that Sunshine runs through its system service in the active console session. These errors retain privacy
+protection and recovery data; they do not enable physical capture as a fallback. They are independent of streaming UDP
+ports. A 404 at the GameStream HTTP root is normal; use `/serverinfo` to test that endpoint.
+
 ### Permission denied
 Since Sunshine runs as a service on Windows, it may not have the same level of access that your regular user account
 has. You may get permission denied errors when attempting to launch a game or application from a non-system drive.
