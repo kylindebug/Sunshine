@@ -1,0 +1,19 @@
+[Unit]
+Description=Sunshine Galaxy Kylin Kirin 9000C
+After=graphical-session.target sunshine-kylin-capture.service
+Wants=sunshine-kylin-capture.service
+PartOf=graphical-session.target
+ConditionPathExists=%t/wayland-0
+
+[Service]
+ExecStart=/usr/local/bin/sunshine-kylin %h/.config/sunshine-kylin/sunshine.conf
+Restart=on-failure
+RestartSec=5
+Environment=DISPLAY=:0
+Environment=WAYLAND_DISPLAY=wayland-0
+Environment=XDG_SESSION_TYPE=wayland
+Environment=SUNSHINE_KWIN_FRAME_FILE=%t/sunshine-capture/frame.bgra
+UMask=0077
+
+[Install]
+WantedBy=graphical-session.target

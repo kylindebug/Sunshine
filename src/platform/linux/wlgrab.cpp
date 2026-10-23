@@ -574,9 +574,11 @@ namespace wl {
       }
 #endif
 
+#ifdef SUNSHINE_BUILD_VULKAN
       if (mem_type == platf::mem_type_e::vulkan) {
         return vk::make_avcodec_encode_device_vram(width, height, 0, 0);
       }
+#endif
 
       return std::make_unique<platf::avcodec_encode_device_t>();
     }
@@ -598,6 +600,7 @@ namespace wl {
      * @param hwdevice_type Hardware device type requested for capture or encode.
      */
     void init_encoder_modifiers(platf::mem_type_e hwdevice_type) {
+#ifdef SUNSHINE_BUILD_VULKAN
       if (hwdevice_type == platf::mem_type_e::vulkan) {
         encoder_modifiers = vk::get_supported_capture_modifiers();
         if (!encoder_modifiers.empty()) {
@@ -607,6 +610,9 @@ namespace wl {
           }
         }
       }
+#else
+      (void) hwdevice_type;
+#endif
     }
 
     std::uint64_t sequence {};  ///< Monotonic capture sequence assigned to Wayland frames.

@@ -1,0 +1,11 @@
+[Unit]
+Description=UKUI shared-memory capture for Sunshine
+PartOf=sunshine-kylin.service
+Before=sunshine-kylin.service
+
+[Service]
+ExecStart=/usr/bin/python3 /usr/local/libexec/sunshine-kylin-capture.py
+EnvironmentFile=%h/.config/sunshine-kylin/capture.env
+Restart=on-failure
+RestartSec=2
+UMask=0077

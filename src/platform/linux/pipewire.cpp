@@ -63,12 +63,17 @@ namespace pipewire {
     int32_t pw_format;  ///< Matching PipeWire SPA video format.
   };
 
+#if PW_CHECK_VERSION(0, 3, 33)
   static constexpr std::array<format_map_t, 7> format_map = {{
     {DRM_FORMAT_XBGR2101010, SPA_VIDEO_FORMAT_xBGR_210LE},
     {DRM_FORMAT_BGRA1010102, SPA_VIDEO_FORMAT_ARGB_210LE},
     {DRM_FORMAT_RGBA1010102, SPA_VIDEO_FORMAT_ABGR_210LE},
     {DRM_FORMAT_ABGR2101010, SPA_VIDEO_FORMAT_RGBA_102LE},
     {DRM_FORMAT_ARGB2101010, SPA_VIDEO_FORMAT_BGRA_102LE},
+#else
+  // Kylin's PipeWire 0.3.19 exposes only the SDR formats used below.
+  static constexpr std::array<format_map_t, 2> format_map = {{
+#endif
     {DRM_FORMAT_ARGB8888, SPA_VIDEO_FORMAT_BGRA},
     {DRM_FORMAT_XRGB8888, SPA_VIDEO_FORMAT_BGRx},
   }};
@@ -671,6 +676,24 @@ namespace pipewire {
         return;
       }
 
+      // Memory buffers were already returned to PipeWire in on_process.
+      // Read the owned staging copy, never recycled chunk metadata or storage.
+      if (!stream_data.front_buffer->empty()) {
+        auto *descriptor = static_cast<img_descriptor_t *>(img);
+        const auto size = stream_data.front_buffer->size();
+        if (descriptor->data_owned) {
+          delete[] img->data;
+        }
+        img->data = new uint8_t[size];
+        std::memcpy(img->data, stream_data.front_buffer->data(), size);
+        descriptor->data_owned = true;
+        img->row_pitch = stream_data.local_stride;
+        img->pixel_pitch = 4;
+        img->frame_timestamp = std::chrono::steady_clock::now();
+        pw_thread_loop_unlock(loop);
+        return;
+      }
+
       struct spa_buffer *buf = stream_data.current_buffer->buffer;
       if (buf->datas[0].chunk->size != 0) {
         auto *img_descriptor = static_cast<img_descriptor_t *>(img);
@@ -741,13 +764,19 @@ namespace pipewire {
         spa_pod_builder_add(b, SPA_FORMAT_VIDEO_framerate, SPA_POD_Fraction(&framerates[0]), 0);
       }
 
+#if PW_CHECK_VERSION(0, 3, 33)
       if (format == SPA_VIDEO_FORMAT_xBGR_210LE) {
         spa_pod_builder_add(b, SPA_FORMAT_VIDEO_colorPrimaries, SPA_POD_Id(SPA_VIDEO_COLOR_PRIMARIES_BT2020), 0);
         spa_pod_builder_add(b, SPA_FORMAT_VIDEO_transferFunction, SPA_POD_Id(SPA_VIDEO_TRANSFER_SMPTE2084), 0);
       }
+#endif
 
       if (n_modifiers) {
+#if defined(SPA_POD_PROP_FLAG_MANDATORY) && defined(SPA_POD_PROP_FLAG_DONT_FIXATE)
         spa_pod_builder_prop(b, SPA_FORMAT_VIDEO_modifier, SPA_POD_PROP_FLAG_MANDATORY | SPA_POD_PROP_FLAG_DONT_FIXATE);
+#else
+        spa_pod_builder_prop(b, SPA_FORMAT_VIDEO_modifier, 0);
+#endif
         spa_pod_builder_push_choice(b, &modifier_frame, SPA_CHOICE_Enum, 0);
 
         // Preferred value, we pick the first modifier be the preferred one
@@ -835,6 +864,23 @@ namespace pipewire {
 
       if (!b) {
         return;
+      }
+
+      static unsigned diagnostic_frames = 0;
+      if (diagnostic_frames++ < 8) {
+        const auto &data = b->buffer->datas[0];
+        BOOST_LOG(info) << "[pipewire] Buffer diagnostic type=" << data.type
+                        << " mapped=" << (data.data != nullptr)
+                        << " size=" << data.chunk->size << " offset=" << data.chunk->offset
+                        << " stride=" << data.chunk->stride << " maxsize=" << data.maxsize;
+        if (data.data && data.chunk->size > 4 && data.chunk->offset == 0 && data.chunk->size <= data.maxsize) {
+          const auto *pixels = static_cast<const uint8_t *>(data.data);
+          unsigned nonzero = 0;
+          for (size_t i = 0; i + 2 < data.chunk->size; i += 4096) {
+            nonzero += (pixels[i] | pixels[i + 1] | pixels[i + 2]) != 0;
+          }
+          BOOST_LOG(info) << "[pipewire] Nonblack sampled pixels=" << nonzero;
+        }
       }
 
       // 2. Fast Path: DMA-BUF
@@ -1155,6 +1201,41 @@ namespace pipewire {
      * @return Capture status reported to the streaming pipeline.
      */
     platf::capture_e snapshot(const pull_free_image_cb_t &pull_free_image_cb, std::shared_ptr<platf::img_t> &img_out, std::chrono::milliseconds timeout, bool show_cursor) {
+      if (const char *fallback = std::getenv("SUNSHINE_KWIN_FRAME_FILE")) {
+        std::ifstream frame(fallback, std::ios::binary | std::ios::ate);
+        const auto bytes = static_cast<size_t>(width) * height * 4;
+        if (!frame || frame.tellg() != static_cast<std::streamoff>(bytes + 16)) {
+          return platf::capture_e::timeout;
+        }
+        frame.seekg(0);
+        uint32_t frame_width = 0, frame_height = 0;
+        uint64_t frame_sequence = 0;
+        frame.read(reinterpret_cast<char *>(&frame_width), sizeof(frame_width));
+        frame.read(reinterpret_cast<char *>(&frame_height), sizeof(frame_height));
+        frame.read(reinterpret_cast<char *>(&frame_sequence), sizeof(frame_sequence));
+        if (!frame || frame_width != width || frame_height != height || frame_sequence == fallback_sequence) {
+          return platf::capture_e::timeout;
+        }
+        if (!pull_free_image_cb(img_out)) {
+          return platf::capture_e::interrupted;
+        }
+        auto *img = static_cast<img_descriptor_t *>(img_out.get());
+        if (img->data_owned) {
+          delete[] img->data;
+        }
+        img->data = new uint8_t[bytes];
+        img->data_owned = true;
+        frame.read(reinterpret_cast<char *>(img->data), bytes);
+        if (!frame) {
+          return platf::capture_e::timeout;
+        }
+        fallback_sequence = frame_sequence;
+        img->row_pitch = width * 4;
+        img->pixel_pitch = 4;
+        img->frame_timestamp = std::chrono::steady_clock::now();
+        img->sequence = ++sequence;
+        return platf::capture_e::ok;
+      }
       // FIXME: show_cursor is ignored
       auto deadline = std::chrono::steady_clock::now() + timeout;
       int retries = 0;
@@ -1392,6 +1473,8 @@ namespace pipewire {
     }
 
   private:
+    uint64_t fallback_sequence = 0;
+
     bool is_buffer_redundant(const egl::img_descriptor_t *img) {
       // Check for corrupted frame
       if (img->pw_flags.has_value() && (img->pw_flags.value() & SPA_CHUNK_FLAG_CORRUPTED)) {

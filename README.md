@@ -1,3 +1,11 @@
+# 银河麒麟麒麟 9000C 版
+
+银河麒麟 V10 SP1 / Maleoon 910 / UKUI Wayland，1080p 实测约 30 FPS。
+
+**[安装与 Moonlight 连接步骤](packaging/kylin-9000c/README.md)** · **[下载安装包](https://github.com/kylindebug/Sunshine/releases/tag/kylin-9000c-v2026.10.23)**
+
+本版使用麒麟原生共享内存采集，绕过 PipeWire 黑屏。
+
 <div align="center">
   <img
     src="sunshine.svg"
