@@ -1,6 +1,7 @@
 [Unit]
 Description=Sunshine Galaxy Kylin Kirin 9000C
-After=graphical-session.target sunshine-kylin-capture.service
+After=graphical-session.target sunshine-kylin-capture.service sunshine-kylin-session.service
+Requires=sunshine-kylin-session.service
 Wants=sunshine-kylin-capture.service
 PartOf=graphical-session.target
 ConditionPathExists=%t/wayland-0
@@ -13,6 +14,7 @@ Environment=DISPLAY=:0
 Environment=WAYLAND_DISPLAY=wayland-0
 Environment=XDG_SESSION_TYPE=wayland
 Environment=SUNSHINE_KWIN_FRAME_FILE=%t/sunshine-capture/frame.bgra
+Environment=SUNSHINE_KYLIN_SESSION_SOCKET=%t/sunshine-session/guard.sock
 UMask=0077
 
 [Install]

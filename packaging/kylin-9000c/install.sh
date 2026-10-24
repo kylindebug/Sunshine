@@ -19,6 +19,7 @@ ln -s /opt/sunshine-runtime/usr/local/assets /usr/local/assets
 install -m 755 "$base/launch.sh" /usr/local/bin/sunshine-kylin
 install -d /usr/local/libexec
 install -m 755 "$base/capture.py" /usr/local/libexec/sunshine-kylin-capture.py
+install -m 755 "$base/session_guard.py" /usr/local/libexec/sunshine-kylin-session.py
 install -d -o "$user" -g "$(id -gn "$user")" "$home/.config/systemd/user" "$home/.config/sunshine-kylin"
 chmod 700 "$home/.config/sunshine-kylin"
 ip=$(tailscale ip -4 2>/dev/null | head -n 1 || true)

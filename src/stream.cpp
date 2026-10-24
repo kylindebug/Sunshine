@@ -37,6 +37,10 @@ extern "C" {
 #include "thread_safe.h"
 #include "utility.h"
 
+#ifdef __linux__
+  #include "platform/linux/session_guard.h"
+#endif
+
 constexpr int IDX_START_A = 0;  ///< Control-stream message index for the first stream-start packet.
 constexpr int IDX_START_B = 1;  ///< Control-stream message index for the second stream-start packet.
 constexpr int IDX_INVALIDATE_REF_FRAMES = 2;  ///< Control-stream message index for invalidate ref frames.
@@ -487,6 +491,9 @@ namespace stream {
    * @brief Runtime state for one audio/video streaming session.
    */
   struct session_t {
+#ifdef __linux__
+    std::unique_ptr<platf::kylin::session_guard> desktop_guard;  ///< Per-stream protection lease.
+#endif
     config_t config;  ///< Stream or encoder configuration captured for the worker.
 
     safe::mail_t mail;  ///< Mailbox used to distribute packets and lifecycle events.
@@ -1325,6 +1332,13 @@ namespace stream {
           }
 
           auto session = *pos;
+
+#ifdef __linux__
+          if (session->desktop_guard && !session->desktop_guard->alive()) {
+            BOOST_LOG(error) << "Kylin session protection was lost; stopping stream";
+            session::stop(*session);
+          }
+#endif
 
           if (now > session->pingTimeout) {
             auto address = session->control.peer ? platf::from_sockaddr((sockaddr *) &session->control.peer->address.address) : session->control.expected_peer_address;
@@ -2206,6 +2220,11 @@ namespace stream {
       }
 
       session.shutdown_event->raise(true);
+#ifdef __linux__
+      if (session.desktop_guard) {
+        session.desktop_guard->disconnect();
+      }
+#endif
     }
 
     /**
@@ -2235,6 +2254,10 @@ namespace stream {
       // Reset input on session stop to avoid stuck repeated keys
       BOOST_LOG(debug) << "Resetting Input..."sv;
       input::reset(session.input);
+
+#ifdef __linux__
+      session.desktop_guard.reset();
+#endif
 
       // If this is the last session, invoke the platform callbacks
       if (--running_sessions == 0) {
@@ -2269,6 +2292,15 @@ namespace stream {
       if (!session.broadcast_ref) {
         return -1;
       }
+
+#ifdef __linux__
+      try {
+        session.desktop_guard = std::make_unique<platf::kylin::session_guard>();
+      } catch (const std::exception &exception) {
+        BOOST_LOG(error) << exception.what();
+        return -1;
+      }
+#endif
 
       session.control.expected_peer_address = addr_string;
       BOOST_LOG(debug) << "Expecting incoming session connections from "sv << addr_string;
