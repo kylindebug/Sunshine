@@ -493,11 +493,33 @@ namespace native_display {
             throw std::runtime_error("Virtual display did not become available within four seconds");
           }
           int stable = 0;
+          bool exact_mode_applied = false;
           std::string observed = "not_observed";
           for (int attempt = 0; attempt < 30 && stable < 3; ++attempt) {
             auto current = read();
             observed = win::mode_summary(current);
             stable = matches(current, target, width, height, fps) ? stable + 1 : 0;
+            // Only touch a freshly verified exclusive virtual source. A stale GDI
+            // alias can belong to a physical monitor after sleep or hotplug.
+            if (!stable && !exact_mode_applied && current.paths.size() == 1 && win::valid(current) && identity(current.paths.front()) == target) {
+              const auto name = source_name(current.paths.front());
+              const std::wstring device_name(name.begin(), name.end());
+              const bool applied = display_calls.call([&] {
+                return win::apply_exact_mode([&](DWORD index, DEVMODEW &mode) {
+                  return EnumDisplaySettingsExW(device_name.c_str(), index, &mode, 0) != FALSE;
+                },
+                                             [&](DEVMODEW &mode, DWORD flags) {
+                                               return ChangeDisplaySettingsExW(device_name.c_str(), &mode, nullptr, flags, nullptr);
+                                             },
+                                             width,
+                                             height,
+                                             fps);
+              });
+              if (!applied) {
+                throw std::runtime_error("[ND_MODE_UNSUPPORTED] Virtual driver could not apply the exact requested mode " + std::to_string(width) + "x" + std::to_string(height) + "@" + std::to_string(fps) + "; add this mode to the virtual display driver or select a supported Moonlight resolution");
+              }
+              exact_mode_applied = true;
+            }
             if (stable == 3) {
               const auto &path = current.paths.front();
               selector = source_name(path);

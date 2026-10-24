@@ -60,6 +60,32 @@ namespace native_display::win {
     return width >= 320 && width <= 7680 && height >= 320 && height <= 7680 && fps >= 1 && fps <= 240;
   }
 
+  /** @brief Select an exact driver-advertised mode after activating a private output.
+   * CCD may substitute a cached source size when SDC_ALLOW_CHANGES is used after resume.
+   * @param enumerate Enumerate fresh DEVMODE entries by index.
+   * @param change Test or apply the selected entry.
+   * @param width Requested width. @param height Requested height. @param fps Requested refresh.
+   * @return True only if the exact mode was advertised, validated and applied.
+   */
+  template<class Enumerate, class Change>
+  bool apply_exact_mode(Enumerate enumerate, Change change, int width, int height, int fps) {
+    for (DWORD index = 0; index < 16384; ++index) {
+      DEVMODEW mode {};
+      mode.dmSize = sizeof(mode);
+      if (!enumerate(index, mode)) {
+        return false;
+      }
+      if (mode.dmPelsWidth != static_cast<DWORD>(width) || mode.dmPelsHeight != static_cast<DWORD>(height) || mode.dmDisplayFrequency != static_cast<DWORD>(fps) || mode.dmBitsPerPel != 32 || (mode.dmDisplayFlags & DM_INTERLACED)) {
+        continue;
+      }
+      mode.dmFields = DM_PELSWIDTH | DM_PELSHEIGHT | DM_BITSPERPEL | DM_DISPLAYFREQUENCY | DM_DISPLAYFLAGS | DM_POSITION;
+      mode.dmPosition = {0, 0};
+      return change(mode, CDS_TEST) == DISP_CHANGE_SUCCESSFUL &&
+             change(mode, CDS_UPDATEREGISTRY) == DISP_CHANGE_SUCCESSFUL;
+    }
+    return false;
+  }
+
   /** @brief Construct one active virtual source without enabling other available displays.
    * @param path Verified virtual target. @param width Width. @param height Height. @param fps Refresh rate.
    * @return A standalone topology with the sole display at the origin.

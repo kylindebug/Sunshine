@@ -164,6 +164,73 @@ TEST(NativeDisplay, ExistingApplicationsRemainDisabled) {
   EXPECT_THROW(native_display::parse("privcy"), std::invalid_argument);
 }
 
+TEST(NativeDisplay, ExactModeRepairsCached1080pWithRequested720p) {
+  std::vector<DWORD> calls;
+  const auto enumerate = [](DWORD index, DEVMODEW &mode) {
+    mode.dmPelsWidth = index == 0 ? 1920 : 1280;
+    mode.dmPelsHeight = index == 0 ? 1080 : 720;
+    mode.dmDisplayFrequency = 30;
+    mode.dmBitsPerPel = 32;
+    return index < 2;
+  };
+  EXPECT_TRUE(native_display::win::apply_exact_mode(enumerate, [&](DEVMODEW &mode, DWORD flags) {
+    calls.push_back(flags);
+    EXPECT_EQ(mode.dmPelsWidth, 1280);
+    EXPECT_EQ(mode.dmPelsHeight, 720);
+    EXPECT_EQ(mode.dmDisplayFrequency, 30);
+    EXPECT_EQ(mode.dmPosition.x, 0);
+    EXPECT_TRUE(mode.dmFields & DM_DISPLAYFREQUENCY);
+    return DISP_CHANGE_SUCCESSFUL;
+  },
+                                                    1280,
+                                                    720,
+                                                    30));
+  EXPECT_EQ(calls, (std::vector<DWORD> {CDS_TEST, CDS_UPDATEREGISTRY}));
+}
+
+TEST(NativeDisplay, ExactModeNeverSubstitutesResolutionRefreshOrInterlacing) {
+  for (int mismatch = 0; mismatch < 4; ++mismatch) {
+    int changes = 0;
+    EXPECT_FALSE(native_display::win::apply_exact_mode([&](DWORD index, DEVMODEW &mode) {
+      mode.dmPelsWidth = mismatch == 0 ? 1920 : 1280;
+      mode.dmPelsHeight = 720;
+      mode.dmDisplayFrequency = mismatch == 1 ? 60 : 30;
+      mode.dmBitsPerPel = mismatch == 2 ? 16 : 32;
+      mode.dmDisplayFlags = mismatch == 3 ? DM_INTERLACED : 0;
+      return index == 0;
+    },
+                                                       [&](DEVMODEW &, DWORD) {
+                                                         ++changes;
+                                                         return DISP_CHANGE_SUCCESSFUL;
+                                                       },
+                                                       1280,
+                                                       720,
+                                                       30));
+    EXPECT_EQ(changes, 0);
+  }
+}
+
+TEST(NativeDisplay, ExactModeDoesNotApplyAfterFailedValidationAndReportsApplyFailure) {
+  for (const DWORD failed_stage : {CDS_TEST, CDS_UPDATEREGISTRY}) {
+    std::vector<DWORD> calls;
+    EXPECT_FALSE(native_display::win::apply_exact_mode([](DWORD, DEVMODEW &mode) {
+      mode.dmPelsWidth = 1280;
+      mode.dmPelsHeight = 720;
+      mode.dmDisplayFrequency = 30;
+      mode.dmBitsPerPel = 32;
+      return true;
+    },
+                                                       [&](DEVMODEW &, DWORD flags) {
+                                                         calls.push_back(flags);
+                                                         return flags == failed_stage ? DISP_CHANGE_BADMODE : DISP_CHANGE_SUCCESSFUL;
+                                                       },
+                                                       1280,
+                                                       720,
+                                                       30));
+    EXPECT_EQ(calls.size(), failed_stage == CDS_TEST ? 1 : 2);
+  }
+}
+
 TEST(NativeDisplay, SetupTimeoutDistinguishesTransportFromNegotiation) {
   using namespace setup_diagnostics;
   EXPECT_STREQ(timeout_code(stage::waiting), "HS_NO_RTSP_CONNECTION");
